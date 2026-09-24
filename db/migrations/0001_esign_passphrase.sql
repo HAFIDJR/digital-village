@@ -1,0 +1,1 @@
+ALTER TABLE "staff" ADD COLUMN "signature_passphrase_hash" varchar(200);
