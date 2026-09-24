@@ -634,7 +634,6 @@ async function populate(db: Db, options: SeedOptions, rng: Next, started: number
     const requiresVerification = !["PENDING_VERIFIKASI", "BERKAS_TIDAK_LENGKAP"].includes(
       opts.status,
     );
-    const requiresSignature = ["DITANDATANGANI", "SIAP_DIAMBIL", "SELESAI"].includes(opts.status);
     const requiresCollection = opts.status === "SELESAI";
 
     /*
