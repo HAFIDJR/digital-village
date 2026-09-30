@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local PGlite data directory (disposable, rebuilt by `npm run db:reset`)
+/.data
+
+# scratch
+/.scratch
