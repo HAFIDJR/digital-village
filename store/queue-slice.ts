@@ -21,9 +21,7 @@ export type QueueState = {
   page: number;
   pageSize: number;
   selectedRequestId: string | null;
-  /** Row under keyboard focus, for arrow-key navigation of the table. */
   focusedIndex: number;
-  /** Density toggle — power users ask to fit more rows on a 1080p screen. */
   density: "comfortable" | "compact";
 };
 
