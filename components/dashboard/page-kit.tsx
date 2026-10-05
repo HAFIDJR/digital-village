@@ -31,28 +31,6 @@ import { formatNumber } from "@/lib/format";
 import { PAGE_SIZES } from "@/lib/validators";
 import { cn } from "@/lib/utils";
 
-/**
- * Page furniture shared by every route inside the shell.
- *
- * These are deliberately *presentational*: none of them own server state or
- * dispatch on their own. A route decides what a filter means (Redux slice, URL,
- * local state) and passes the value and the callback down, so the same toolbar
- * can drive the letter worklist, the reports register and the population
- * registry without any of them leaking into each other.
- */
-
-/* -------------------------------------------------------------------------- */
-/* Page header                                                                 */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The operational header of a sub-page.
- *
- * Deliberately a light band, not the dark hero used on the landing route: an
- * officer who navigates twenty times a day needs the content to be the loudest
- * thing on screen, and thirteen dark ribbons would turn the shell into a
- * slideshow.
- */
 export function PageHeader({
   title,
   description,
@@ -106,9 +84,6 @@ export function PageHeader({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Stat cards                                                                  */
-/* -------------------------------------------------------------------------- */
 
 export function StatStrip({
   children,
@@ -122,13 +97,6 @@ export function StatStrip({
   );
 }
 
-/**
- * One figure an officer can quote.
- *
- * `onClick` turns the card into a filter shortcut rather than a dead
- * decoration — clicking "Belum ditanggapi" has to actually narrow the table
- * below it, or the card is just a number with a border.
- */
 export function StatCard({
   label,
   value,
@@ -206,7 +174,6 @@ export function StatCard({
   );
 }
 
-/** Compact inline figure row used inside panels (e.g. reports summary). */
 export function MiniStat({
   label,
   value,
@@ -231,9 +198,6 @@ export function MiniStat({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Toolbar                                                                     */
-/* -------------------------------------------------------------------------- */
 
 export function Toolbar({ children }: { children: React.ReactNode }) {
   return (
@@ -301,13 +265,6 @@ export type FacetOption = {
   disabled?: boolean;
 };
 
-/**
- * Multi-select facet.
- *
- * One component for every filter of this kind — statuses, categories, dusun,
- * letter types — because they all behave identically and differ only in the
- * options and their counts.
- */
 export function FacetMenu({
   label,
   options,
@@ -390,7 +347,7 @@ export function FacetMenu({
   );
 }
 
-/** Single-choice sort control. */
+
 export function SortMenu({
   value,
   options,
@@ -427,7 +384,6 @@ export function SortMenu({
   );
 }
 
-/** Quick-filter chip — the one-click presets an officer uses at the counter. */
 export function PresetChip({
   active,
   onClick,
@@ -566,12 +522,6 @@ export function TableSkeleton({
   );
 }
 
-/**
- * Pagination footer.
- *
- * `onPageSize` is optional: the registry pages cap their page sizes to what the
- * API accepts (10/25/50/100), so the control can never produce a 422.
- */
 export function Pager({
   page,
   pageSize,
@@ -667,7 +617,7 @@ export function Pager({
   );
 }
 
-/** Footer strip used to explain the rule a table enforces. */
+
 export function PanelFootnote({
   left,
   right,
