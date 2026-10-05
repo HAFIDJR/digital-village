@@ -8,7 +8,6 @@ import queueReducer from "./queue-slice";
 import registryReducer from "./registry-slice";
 import reportsReducer from "./reports-slice";
 import uiReducer from "./ui-slice";
-import "dotenv/config";
 
 export function makeStore() {
   return configureStore({
