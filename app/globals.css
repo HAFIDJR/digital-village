@@ -1,26 +1,270 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ==========================================================================
+   DESIGN TOKENS — "Civic Slate" design system
+   Digital Village · Dashboard Operator & Perangkat Desa
+
+   Rules encoded here:
+   - One canvas colour, one surface colour. No gradients anywhere.
+   - Every container is defined by a 1px border, never by a decorative shadow.
+   - Elevation (shadow) is reserved for genuinely floating layers:
+     dropdowns, popovers and slide-over panels.
+   - All informational text clears WCAG 2.2 AA (4.5:1) on its own background.
+   ========================================================================== */
+
+@theme {
+  /* --- Brand ------------------------------------------------------------ */
+  --color-ink: #0f172a; /* Deep Slate  — brand ink, primary text   */
+  --color-ink-hover: #1e293b;
+  --color-civic: #1e3a8a; /* Civic Navy  — primary action, focus     */
+  --color-civic-hover: #1c3578;
+  --color-civic-active: #182c66;
+  --color-civic-soft: #eef2fb; /* 8% navy tint on white — selected rows  */
+  --color-civic-soft-hover: #e3eaf8;
+
+  /* --- Surfaces --------------------------------------------------------- */
+  --color-canvas: #f1f5f9; /* app background — neutral enterprise gray */
+  --color-surface: #ffffff; /* container cards                          */
+  --color-surface-muted: #f8fafc; /* table headers, inset wells              */
+  --color-surface-sunken: #f1f5f9;
+
+  /* --- Hairlines -------------------------------------------------------- */
+  --color-line: #e2e8f0; /* crisp 1px compartment border             */
+  --color-line-strong: #cbd5e1; /* input borders, dividers on muted bg      */
+
+  /* --- Text (contrast ratios measured on #FFFFFF) ---------------------- */
+  --color-fg: #0f172a; /* 17.9:1  */
+  --color-fg-muted: #475569; /*  7.5:1  */
+  --color-fg-subtle: #64748b; /*  5.0:1  — smallest text we allow        */
+  --color-fg-on-dark: #f8fafc;
+
+  /* --- Semantic status -------------------------------------------------- */
+  --color-pending: #92400e; /* amber-800  · 7.3:1 on #FFFBEB */
+  --color-pending-bg: #fffbeb;
+  --color-pending-line: #fcd34d;
+  --color-pending-solid: #d97706;
+
+  --color-approved: #065f46; /* emerald-800 · 8.6:1 on #ECFDF5 */
+  --color-approved-bg: #ecfdf5;
+  --color-approved-line: #6ee7b7;
+  --color-approved-solid: #059669;
+
+  --color-rejected: #9f1239; /* rose-800   · 9.4:1 on #FFF1F2 */
+  --color-rejected-bg: #fff1f2;
+  --color-rejected-line: #fda4af;
+  --color-rejected-solid: #e11d48;
+
+  --color-progress: #1e40af; /* blue-800   · 10.2:1 on #EFF6FF */
+  --color-progress-bg: #eff6ff;
+  --color-progress-line: #93c5fd;
+  --color-progress-solid: #2563eb;
+
+  --color-neutral: #334155; /* slate-700  · 10.3:1 on #F1F5F9 */
+  --color-neutral-bg: #f1f5f9;
+  --color-neutral-line: #cbd5e1;
+
+  /* --- Radii — restrained, never pill-shaped except status badges ------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* --- Elevation (floating layers only) --------------------------------- */
+  --shadow-layer-1: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 0 0 1px rgb(15 23 42 / 0.04);
+  --shadow-layer-2: 0 4px 12px -2px rgb(15 23 42 / 0.08), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-layer-3: 0 24px 48px -12px rgb(15 23 42 / 0.18);
+  --shadow-focus: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-civic);
 }
 
+/* Typefaces are self-hosted via Fontsource (see app/layout.tsx) — the dashboard
+   must render identically on an air-gapped office workstation. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Plus Jakarta Sans Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ==========================================================================
+   BASE LAYER
+   ========================================================================== */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 20px;
+    font-feature-settings: "cv05" 1, "cv08" 1, "ss03" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* A single, unmistakable focus treatment for every interactive element. */
+  :focus-visible {
+    outline: 2px solid var(--color-civic);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-civic) 22%, transparent);
+  }
+
+  /* Fixed, restrained scrollbars — dense enterprise tables scroll constantly. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8;
+  }
+
+  caption,
+  th,
+  td {
+    text-align: left;
+  }
+
+  /* Respect user motion preferences (WCAG 2.3.3). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ==========================================================================
+   UTILITIES
+   ========================================================================== */
+
+/* Tabular figures for every financial, demographic and time value.
+   Proportional digits make columns jitter while scanning — this stops it. */
+@utility tnum {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+@utility text-2xs {
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+}
+
+/* Dense data-table typography. */
+@utility text-tabular {
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+@utility text-label {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-fg-subtle);
+}
+
+@utility shadow-layer-1 {
+  box-shadow: var(--shadow-layer-1);
+}
+@utility shadow-layer-2 {
+  box-shadow: var(--shadow-layer-2);
+}
+@utility shadow-layer-3 {
+  box-shadow: var(--shadow-layer-3);
+}
+
+/* The signature container of this system: white, hairline-bordered, flush. */
+@utility panel {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+}
+
+/* Fine hairline grid used behind scan/document previews. */
+@utility bg-scan-grid {
+  background-image:
+    linear-gradient(to right, rgb(15 23 42 / 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(15 23 42 / 0.04) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+@keyframes dv-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px color-mix(in oklab, currentColor 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 0%, transparent);
+  }
+}
+
+@utility pulse-ring {
+  animation: dv-pulse-ring 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes dv-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@utility skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-surface-sunken);
+}
+
+@utility skeleton-shimmer-after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, white 65%, transparent),
+    transparent
+  );
+  animation: dv-shimmer 1.6s infinite;
 }

@@ -78,7 +78,7 @@ export function DashboardFrame({ children }: { children: React.ReactNode }) {
           />
           <div className="mx-auto w-full max-w-380 p-4">
             <QueryErrorState
-              title="Gagal memuat data desa"
+              title="Gagal memuat data desa , Silahkan Coba Lagi Nanti"
               message={errorMessage(error)}
               onRetry={() => refetch()}
             />
