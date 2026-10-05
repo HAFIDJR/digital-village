@@ -47,8 +47,6 @@ const registrySlice = createSlice({
   reducers: {
     typeChanged(state, action: PayloadAction<RegistryType>) {
       state.type = action.payload;
-      // Status filters are resident-only; carrying them into the family view
-      // would silently filter nothing and confuse the empty state.
       state.statuses = [];
       state.sort = action.payload === "families" ? "name_asc" : state.sort;
       resetPaging(state);

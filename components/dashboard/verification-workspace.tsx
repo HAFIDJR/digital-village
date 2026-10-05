@@ -13,14 +13,6 @@ import { QueryErrorState } from "./feedback";
 import { PageHeader, StatCard, StatStrip } from "./page-kit";
 import { QueuePanel, queueResultLabel, useQueuePreset } from "./queue/queue-panel";
 
-/**
- * Verifikasi Berkas.
- *
- * A route rather than a filter preset hidden in a dropdown: document
- * verification is a distinct job with its own owner at the counter, and the
- * officer who does it should be able to bookmark it, hand the URL to a
- * colleague, and see the sidebar say where they are.
- */
 const PRESET = ["PENDING_VERIFIKASI", "BERKAS_TIDAK_LENGKAP"] as const;
 
 export function VerificationWorkspace() {

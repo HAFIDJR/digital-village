@@ -6,14 +6,6 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-/**
- * Village identity block for the topbar: seal, official name line, and the
- * connection indicator.
- *
- * Fallback behaviour matters here: `sealUrl` points at an operator-uploaded
- * asset, so a broken or missing file must degrade to a neutral emblem rather
- * than a broken-image icon on the government letterhead.
- */
 export function VillageSeal({
   name,
   regency,
@@ -37,9 +29,6 @@ export function VillageSeal({
         )}
       >
         {showImage ? (
-          // A plain <img>, not next/image: the seal is a tiny local SVG that
-          // would only pay the optimiser's overhead.
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={sealUrl ?? ""}
             alt={`Lambang ${name}`}
@@ -64,13 +53,6 @@ export function VillageSeal({
   );
 }
 
-/**
- * Connectivity indicator.
- *
- * Rendered next to the village name because "is the network up?" is the first
- * question an operator asks when a submission fails to appear — and the answer
- * should not require opening devtools.
- */
 function ConnectionDot({ online }: { online: boolean }) {
   const Icon = online ? Wifi : WifiOff;
 
