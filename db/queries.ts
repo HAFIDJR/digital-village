@@ -467,18 +467,6 @@ export async function getKpiSummary(villageId: string): Promise<KpiSummary> {
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Letter request queue                                                        */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Binds a JS array as an explicit `in (…)` parameter list.
- *
- * Passing the array straight to the template (`= any(${array})`) does not work:
- * Drizzle flattens it into a parenthesised list of separate parameters, which
- * PostgreSQL rejects for `any()`. Building the list explicitly keeps every value
- * a bound parameter — no interpolation of user input into SQL text.
- */
 function inList(column: SQL, values: readonly string[]): SQL {
   return sql`${column} in (${sql.join(
     values.map((value) => sql`${value}`),

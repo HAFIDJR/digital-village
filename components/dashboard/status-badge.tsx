@@ -12,9 +12,6 @@ import {
 } from "@/lib/domain";
 import type { LetterAttachmentStatus, RequestStatus } from "@/db/schema";
 
-/* -------------------------------------------------------------------------- */
-/* Request status                                                              */
-/* -------------------------------------------------------------------------- */
 
 const STATUS_ICON: Partial<Record<RequestStatus, typeof CircleDashed>> = {
   PENDING_VERIFIKASI: CircleDashed,
@@ -27,13 +24,7 @@ const STATUS_ICON: Partial<Record<RequestStatus, typeof CircleDashed>> = {
   DITOLAK: CircleX,
 };
 
-/**
- * Status chip for the queue.
- *
- * Colour is never the only signal: each chip carries an icon and a text label,
- * so the status survives greyscale printing and colour-vision deficiency
- * (WCAG 1.4.1 — Use of Colour).
- */
+
 export function RequestStatusBadge({
   status,
   variant = "full",
@@ -65,8 +56,6 @@ export function RequestStatusBadge({
       <Icon
         className={cn(
           "size-3",
-          // The "in flight" states get a slow spin, disabled under
-          // prefers-reduced-motion by the global base layer.
           status === "DIVERIFIKASI" && "animate-spin [animation-duration:2.6s]",
         )}
         aria-hidden
@@ -76,16 +65,6 @@ export function RequestStatusBadge({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Document completeness                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * "3 Berkas Lengkap" / "KTP Buram".
- *
- * The compliance note takes precedence when present: an officer standing at a
- * counter needs the *defect*, not the count. The count moves to the tooltip.
- */
 export function DocumentBadge({
   uploaded,
   required,
@@ -143,16 +122,6 @@ export function AttachmentStatusBadge({ status }: { status: string }) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Letter type                                                                 */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Letter-type code chip: SKU, SKCK, SKD, SKM…
- *
- * Always monospace + tabular so a column of codes aligns on a common baseline —
- * officers scan this column continuously all day.
- */
 export function LetterTypeBadge({
   code,
   name,
@@ -184,9 +153,6 @@ export function LetterTypeBadge({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Priority                                                                    */
-/* -------------------------------------------------------------------------- */
 
 export function PriorityMarker({ priority }: { priority: string }) {
   if (priority === "DARURAT") {
@@ -207,10 +173,6 @@ export function PriorityMarker({ priority }: { priority: string }) {
   }
   return null;
 }
-
-/* -------------------------------------------------------------------------- */
-/* SLA countdown                                                               */
-/* -------------------------------------------------------------------------- */
 
 export function SlaIndicator({
   slaMinutes,
