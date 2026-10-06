@@ -182,7 +182,6 @@ export const staff = pgTable(
       .notNull()
       .references(() => villages.id, { onDelete: "cascade" }),
     fullName: varchar("full_name", { length: 120 }).notNull(),
-    /** Jabatan, e.g. "Kasi Pelayanan" */
     jobTitle: varchar("job_title", { length: 120 }).notNull(),
     role: staffRoleEnum("role").notNull(),
     nipd: varchar("nipd", { length: 32 }), // NIPD / NIP
@@ -190,13 +189,7 @@ export const staff = pgTable(
     phone: varchar("phone", { length: 32 }),
     avatarUrl: text("avatar_url"),
     initials: varchar("initials", { length: 4 }).notNull(),
-    /** Staff who can authorise documents with an electronic signature. */
     canSign: boolean("can_sign").notNull().default(false),
-    /**
-     * scrypt digest of the officer's BSrE passphrase (`scrypt$salt$key`).
-     * Null for everyone who is not a signer — the ceremony refuses to run
-     * against an unactivated credential rather than signing with any input.
-     */
     signaturePassphraseHash: varchar("signature_passphrase_hash", { length: 200 }),
     active: boolean("active").notNull().default(true),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),

@@ -1,7 +1,8 @@
 import { sql } from "drizzle-orm";
-import { drizzle as drizzleNode } from "drizzle-orm/postgres-js";
+// import { drizzle as drizzleNode } from "drizzle-orm/postgres-js";
+import { drizzle as drizzleNode } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
-import "dotenv/config";
 
 import * as schema from "./schema";
 
@@ -60,11 +61,15 @@ export async function getDb() {
         "DATABASE_DRIVER=postgres requires DATABASE_URL, e.g. postgres://user:pass@localhost:5432/digital_village",
       );
     }
-    const { default: postgres } = await import("postgres");
-    const db = drizzleNode(
-      postgres(url, { max: 10, onnotice: () => {}, connection: { timezone: VILLAGE_TIMEZONE } }),
-      { schema, casing: "snake_case" },
-    );
+    const pool = new Pool({
+      connectionString: url,
+      options: `-c timezone=${VILLAGE_TIMEZONE}`,
+    });
+
+    const db = drizzleNode(pool, {
+      schema,
+      casing: "snake_case",
+    });
     globalForDb.__dvDb = db as unknown as DrizzleDb;
     return globalForDb.__dvDb;
   }
@@ -78,10 +83,13 @@ export async function getRawClient(): Promise<PgliteInstance> {
   return getPinnedPgliteClient();
 }
 
-
 export async function pingDatabase() {
   const db = await getDb();
-  const result = await db.execute<{ version: string; now: Date; timezone: string }>(
+  const result = await db.execute<{
+    version: string;
+    now: Date;
+    timezone: string;
+  }>(
     sql`select version() as version, now() as now, current_setting('TimeZone') as timezone`,
   );
   const row = result.rows[0];
@@ -94,5 +102,3 @@ export async function pingDatabase() {
 
 export { schema };
 export type Db = Awaited<ReturnType<typeof getDb>>;
-
-

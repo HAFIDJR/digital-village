@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import fs from "node:fs/promises";
 import path from "node:path";
-import "dotenv/config";
+
 
 import { getDb } from "./client";
 import { MIGRATIONS_DIR } from "./pglite-paths";
