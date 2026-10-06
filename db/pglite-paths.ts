@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import "dotenv/config";
+
 
 export const PGLITE_DATA_DIR =
   process.env.PGLITE_DATA_DIR ?? path.join(process.cwd(), ".data", "pgdata");

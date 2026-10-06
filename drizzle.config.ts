@@ -1,5 +1,4 @@
 import { defineConfig } from "drizzle-kit";
-import "dotenv/config";
 
 export default defineConfig({
   dialect: "postgresql",
@@ -9,6 +8,6 @@ export default defineConfig({
   strict: true,
   verbose: true,
   dbCredentials: {
-    url:  process.env.DATABASE_URL ?? "postgres://localhost:5432/digital_village" ,
+    url: process.env.DATABASE_URL ?? "postgres://localhost:5432/digital_village",
   },
 });
