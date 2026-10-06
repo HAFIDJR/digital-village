@@ -1,4 +1,5 @@
 import { DomainError } from "@/db/commands";
+import { requireStaffSession } from "@/lib/auth/guard";
 import { getVillageProfile, listArchivedLetters } from "@/db/queries";
 import { parseQueueQuery } from "@/lib/validators";
 
@@ -10,6 +11,8 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
 
   return withApi(async () => {
+    await requireStaffSession();
+
     const query = parseQueueQuery(params);
 
     const village = await getVillageProfile();

@@ -47,7 +47,6 @@ import {
   formatNumber,
   formatRelative,
 } from "@/lib/format";
-import { ESIGN_TRAINING_PASSPHRASE } from "@/lib/esign";
 import { useNow } from "./now-context";
 import { cn } from "@/lib/utils";
 import type { AttachmentView, RequestDetail } from "@/db/queries";
@@ -56,9 +55,12 @@ import {
   errorMessage,
   letterPdfUrl,
   useGetRequestQuery,
+  useGetShellQuery,
   useSignRequestMutation,
   useVerifyRequestMutation,
 } from "@/store/api";
+import { ROLE_CAPABILITIES } from "@/lib/domain";
+import type { StaffRole } from "@/db/schema";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { queueActions } from "@/store/queue-slice";
 import { uiActions } from "@/store/ui-slice";
@@ -123,6 +125,7 @@ function DrawerBody({ requestId }: { requestId: string }) {
 function DrawerContent({ detail }: { detail: RequestDetail }) {
   const dispatch = useAppDispatch();
   const now = useNow();
+  const shell = useGetShellQuery();
   const [verify, verifyState] = useVerifyRequestMutation();
   const [sign, signState] = useSignRequestMutation();
 
@@ -148,12 +151,19 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
   const defectCount = Object.values(verdicts).filter(
     (v) => v !== "LENGKAP",
   ).length;
+  // Actions follow the logged-in officer's role (enforced again server-side):
+  // only verification-capable roles act on files, and only the session's
+  // signer — the Kepala Desa — ever sees the signature ceremony.
+  const officer = shell.data?.officer ?? null;
+  const canVerify =
+    officer != null && (ROLE_CAPABILITIES[officer.role as StaffRole]?.verify ?? false);
   const canApprove =
-    detail.status === "PENDING_VERIFIKASI" ||
-    detail.status === "BERKAS_TIDAK_LENGKAP" ||
-    detail.status === "DIVERIFIKASI";
+    canVerify &&
+    (detail.status === "PENDING_VERIFIKASI" ||
+      detail.status === "BERKAS_TIDAK_LENGKAP" ||
+      detail.status === "DIVERIFIKASI");
   const forwardingToKades = detail.status === "DIVERIFIKASI";
-  const canSign = detail.status === "MENUNGGU_TTD_KADES";
+  const canSign = detail.status === "MENUNGGU_TTD_KADES" && Boolean(officer?.canSign);
   const canPrintFinal =
     Boolean(detail.signature?.signedAt) ||
     detail.status === "SIAP_DIAMBIL" ||
@@ -744,12 +754,12 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
                     Frasa sandi diverifikasi terhadap kredensial BSrE pejabat
                     penanda tangan dan tidak pernah disimpan dalam bentuk asli.
                   </p>
-                  <p className="rounded-xs border border-line bg-surface px-2 py-1.5 text-2xs leading-4 text-fg-subtle">
-                    Lingkungan latihan — frasa sandi Kepala Desa:{" "}
-                    <span className="font-mono font-semibold text-fg-muted">
-                      {ESIGN_TRAINING_PASSPHRASE}
-                    </span>
-                  </p>
+                  {shell.data?.esignTrainingHint ? (
+                    <p className="rounded-xs border border-pending-line/60 bg-pending-bg px-2 py-1.5 text-2xs leading-4 text-pending">
+                      Lingkungan latihan — frasa sandi Kepala Desa:{" "}
+                      <span className="font-mono font-semibold">{shell.data.esignTrainingHint}</span>
+                    </p>
+                  ) : null}
                   <div className="flex items-center gap-2">
                     <Button
                       variant="primary"

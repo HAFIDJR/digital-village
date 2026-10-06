@@ -345,6 +345,59 @@ export const apiErrorSchema = z.object({
 
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
+/* -------------------------------------------------------------------------- */
+/* Authentication                                                              */
+/* -------------------------------------------------------------------------- */
+
+const emailSchema = z
+  .string({ error: "Email wajib diisi" })
+  .trim()
+  .toLowerCase()
+  .regex(/^[^@\s]+@[^@\s]+\.[^@\s]+$/, "Format email tidak valid")
+  .max(160, "Email maksimal 160 karakter");
+
+const passwordSchema = z
+  .string({ error: "Kata sandi wajib diisi" })
+  .min(8, "Kata sandi minimal 8 karakter")
+  .max(128, "Kata sandi maksimal 128 karakter");
+
+const redirectPathSchema = z
+  .string()
+  .max(200, "Alamat tujuan terlalu panjang")
+  .optional();
+
+export const staffLoginSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+  station: z
+    .enum(["Loket Pelayanan", "Verifikasi Berkas", "Ruang Kepala Desa", "Tata Usaha"], {
+      error: "Pos layanan tidak dikenal",
+    })
+    .default("Loket Pelayanan"),
+  next: redirectPathSchema,
+});
+
+export type StaffLoginInput = z.infer<typeof staffLoginSchema>;
+
+export const residentLoginSchema = z.object({
+  nik: nikSchema,
+  password: passwordSchema,
+  next: redirectPathSchema,
+});
+
+export type ResidentLoginInput = z.infer<typeof residentLoginSchema>;
+
+export const esignPassphraseSchema = z.object({
+  /** Required when rotating an already-activated certificate. */
+  currentPassphrase: z.string().min(8).max(128).optional(),
+  newPassphrase: z
+    .string({ error: "Frasa sandi baru wajib diisi" })
+    .min(8, "Frasa sandi minimal 8 karakter")
+    .max(128, "Frasa sandi maksimal 128 karakter"),
+});
+
+export type EsignPassphraseInput = z.infer<typeof esignPassphraseSchema>;
+
 /** Flattens a ZodError into the field map the API returns and forms consume. */
 export function toFieldErrors(error: z.ZodError): Record<string, string[]> {
   const output: Record<string, string[]> = {};

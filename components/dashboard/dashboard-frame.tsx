@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 
 import { Kbd } from "@/components/ui/primitives";
 import { formatNumber } from "@/lib/format";
@@ -36,7 +37,17 @@ const fallbackVillage: VillageProfile = {
 
 export function DashboardFrame({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch();
+  const router = useRouter();
   const { data, isLoading, isError, error, refetch, fulfilledTimeStamp } = useGetShellQuery();
+
+  // A 401 from the shell means the session expired or was revoked mid-shift
+  // (the layout's own guard already caught the no-session case). Bounce to
+  // the login page instead of showing a misleading "server error".
+  React.useEffect(() => {
+    if (isError && (error as { status?: number } | undefined)?.status === 401) {
+      router.replace("/masuk");
+    }
+  }, [isError, error, router]);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

@@ -152,7 +152,10 @@ export const ACTIVITY_KIND: Record<ActivityKind, { label: string; tone: Tone }> 
   CETAK_SURAT: { label: "Cetak Surat", tone: "neutral" },
   MUTASI_PENDUDUK: { label: "Mutasi Penduduk", tone: "neutral" },
   PENGUMUMAN: { label: "Pengumuman", tone: "progress" },
-  MASUK_LOG: { label: "Log Sistem", tone: "neutral" },
+  MASUK_LOG: { label: "Masuk Sistem", tone: "progress" },
+  KELUAR_LOG: { label: "Keluar Sistem", tone: "neutral" },
+  AKTIVASI_TTD: { label: "Aktivasi Sertifikat TTD", tone: "approved" },
+  KEAMANAN_AKUN: { label: "Keamanan Akun", tone: "rejected" },
 };
 
 
@@ -169,14 +172,21 @@ export const STAFF_ROLE: Record<StaffRole, string> = {
 
 export const ROLE_CAPABILITIES: Record<
   StaffRole,
-  { verify: boolean; sign: boolean; publish: boolean; manageRegistry: boolean }
+  {
+    verify: boolean;
+    sign: boolean;
+    publish: boolean;
+    manageRegistry: boolean;
+    /** Settings, staff roster and village profile edits — elevated roles only. */
+    manageSettings: boolean;
+  }
 > = {
-  OPERATOR_DESA: { verify: true, sign: false, publish: true, manageRegistry: true },
-  SEKDES: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KASI_PELAYANAN: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KAUR_TU: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KADES: { verify: false, sign: true, publish: true, manageRegistry: false },
-  KADUS: { verify: false, sign: false, publish: false, manageRegistry: false },
+  OPERATOR_DESA: { verify: true, sign: false, publish: true, manageRegistry: true, manageSettings: true },
+  SEKDES: { verify: true, sign: false, publish: true, manageRegistry: true, manageSettings: true },
+  KASI_PELAYANAN: { verify: true, sign: false, publish: true, manageRegistry: true, manageSettings: false },
+  KAUR_TU: { verify: true, sign: false, publish: true, manageRegistry: true, manageSettings: false },
+  KADES: { verify: false, sign: true, publish: true, manageRegistry: false, manageSettings: true },
+  KADUS: { verify: false, sign: false, publish: false, manageRegistry: false, manageSettings: false },
 };
 
 export const REPORT_STATUS: Record<string, { label: string; tone: Tone }> = {

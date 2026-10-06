@@ -7,10 +7,11 @@
  *
  *   npm run db:seed     (or npm run db:reset to wipe first)
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { readEsignPassphrase } from "@/lib/esign";
-import { hashPassphrase } from "@/lib/esign-server";
+import { hashPassword } from "@/lib/auth/password";
+import { DEMO_STAFF_PASSWORD, DEMO_WARGA_NIK, DEMO_WARGA_PASSWORD } from "@/lib/auth/demo";
 
 import { getDb } from "./client";
 import {
@@ -265,7 +266,12 @@ async function populate(
   /* ----------------------------------------------------------------- staff */
   // Only the signer carries an activated credential; everyone else stays null.
   const esign = readEsignPassphrase();
-  const signerPassphraseHash = hashPassphrase(esign.passphrase);
+  const signerPassphraseHash = hashPassword(esign.passphrase);
+
+  // LOCAL DEV SEED DATA: one shared demo password for every staff account so
+  // the training village is loggable out of the box. Production credentials
+  // are set per-officer and never seeded.
+  const staffPasswordHash = hashPassword(DEMO_STAFF_PASSWORD);
 
   const staffRows = await db
     .insert(t.staff)
@@ -281,6 +287,7 @@ async function populate(
         initials: s.initials,
         canSign: s.canSign,
         signaturePassphraseHash: s.canSign ? signerPassphraseHash : null,
+        passwordHash: staffPasswordHash,
         active: true,
         // Presence drives the "Status Kades E-Sign" card, so it has to be
         // plausible rather than uniform: the officer on shift and the Kepala
@@ -685,15 +692,17 @@ async function populate(
   }
 
   /* ------------------------------------------------ mutasi untuk audit feed */
-  const recentMutationResidents = (await db.execute<{
+  const recentMutationResidents = getRows<{
     id: string;
     full_name: string;
   }>(
-    sql`select id, full_name from residents where status = 'AKTIF' order by random() limit 6`,
-  )) as unknown as {
-    id: string;
-    full_name: string;
-  }[];
+    await db.execute<{
+      id: string;
+      full_name: string;
+    }>(
+      sql`select id, full_name from residents where status = 'AKTIF' order by random() limit 6`,
+    ),
+  );
 
   /* ------------------------------------------------------- letter requests */
   // Today: 14 requests, 8 still unprocessed. The rest is a realistic backlog.
@@ -734,7 +743,9 @@ async function populate(
   order by r.nik
   limit 900
 `);
-  const applicants = applicantPool as unknown as Applicant[];
+  // `db.execute` returns the full driver result ({ rows, fields, ... }), not a
+  // plain array — unwrap via getRows so the pool is a real Applicant[].
+  const applicants = getRows<Applicant>(applicantPool);
 
   let ticketCounter = 1000;
 
@@ -938,6 +949,46 @@ async function populate(
     .insert(t.letterRequests)
     .values(requestValues)
     .returning();
+
+  /* ------------------------------------------------ demo resident account */
+  // LOCAL DEV SEED DATA: exactly one warga portal account, so the resident
+  // portal is demoable. The account belongs to the applicant of the first
+  // finished (signed) letter — their NIK is normalised to a fixed demo value
+  // so documentation stays stable across seeds.
+  let demoResidentName: string | null = null;
+  const demoRequest = requestRows.find(
+    (r) =>
+      r.applicantResidentId !== null &&
+      (r.status === "SELESAI" ||
+        r.status === "SIAP_DIAMBIL" ||
+        r.status === "DITANDATANGANI"),
+  );
+  if (demoRequest?.applicantResidentId) {
+    const [demoResident] = await db
+      .select()
+      .from(t.residents)
+      .where(eq(t.residents.id, demoRequest.applicantResidentId))
+      .limit(1);
+    if (demoResident) {
+      await db
+        .update(t.residents)
+        .set({ nik: DEMO_WARGA_NIK, updatedAt: now })
+        .where(eq(t.residents.id, demoResident.id));
+      // The applicant snapshot on each request is denormalised; keep it true.
+      await db
+        .update(t.letterRequests)
+        .set({ applicantNik: DEMO_WARGA_NIK })
+        .where(eq(t.letterRequests.applicantResidentId, demoResident.id));
+      await db.insert(t.residentAccounts).values({
+        villageId: village.id,
+        residentId: demoResident.id,
+        nik: DEMO_WARGA_NIK,
+        passwordHash: hashPassword(DEMO_WARGA_PASSWORD),
+        active: true,
+      });
+      demoResidentName = demoResident.fullName;
+    }
+  }
 
   /* ------------------------------------------------------------- attachments */
   type AttachmentInsert = typeof t.letterAttachments.$inferInsert;
@@ -1393,6 +1444,7 @@ async function populate(
       reports: reportValues.length,
     },
     sampleTicket: requestRows[0]?.ticket ?? null,
+    demoWarga: demoResidentName ? { name: demoResidentName, nik: DEMO_WARGA_NIK } : null,
   };
 }
 

@@ -98,7 +98,15 @@ export const activityKindEnum = pgEnum("activity_kind", [
   "MUTASI_PENDUDUK",
   "PENGUMUMAN",
   "MASUK_LOG",
+  // Auth audit trail: login/logout of both actors, self-service certificate
+  // activation, and rejected credential attempts (never the secret itself).
+  "KELUAR_LOG",
+  "AKTIVASI_TTD",
+  "KEAMANAN_AKUN",
 ]);
+
+/** Which side of the counter a session belongs to. */
+export const sessionActorEnum = pgEnum("session_actor", ["STAFF", "RESIDENT"]);
 
 export const signatureStatusEnum = pgEnum("signature_status", [
   "MENUNGGU",
@@ -191,6 +199,14 @@ export const staff = pgTable(
     initials: varchar("initials", { length: 4 }).notNull(),
     canSign: boolean("can_sign").notNull().default(false),
     signaturePassphraseHash: varchar("signature_passphrase_hash", { length: 200 }),
+    /** Login credential (scrypt, same scheme as the signature passphrase). */
+    passwordHash: varchar("password_hash", { length: 200 }),
+    /** Failed login attempts since the last success — drives lockout. */
+    loginAttempts: integer("login_attempts").notNull().default(0),
+    loginLockedUntil: timestamp("login_locked_until", { withTimezone: true }),
+    /** Failed signature-passphrase attempts — protects the signing ceremony. */
+    signAttempts: integer("sign_attempts").notNull().default(0),
+    signLockedUntil: timestamp("sign_locked_until", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -217,6 +233,44 @@ export const staffShifts = pgTable(
     ipAddress: varchar("ip_address", { length: 64 }),
   },
   (t) => [index("staff_shifts_staff_idx").on(t.staffId, t.startedAt)],
+);
+
+/* ==========================================================================
+   SESSIONS
+   ========================================================================== */
+
+/**
+ * Server-side sessions for both audiences of the app.
+ *
+ * The cookie only ever carries this row's opaque id; identity, actor type and
+ * expiry are resolved from the database on every request, which keeps logout
+ * (and force-revocation) effective immediately. A DB session table was chosen
+ * over a stateless JWT precisely because revocation must be a first-class
+ * operation in a pelayanan-publik audit context.
+ */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    actorType: sessionActorEnum("actor_type").notNull(),
+    /** staff.id when STAFF, resident_accounts.id when RESIDENT. */
+    actorId: uuid("actor_id").notNull(),
+    userAgent: varchar("user_agent", { length: 200 }),
+    ipAddress: varchar("ip_address", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    /** Rolling expiry — extended while the session stays in use. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Set by logout; a revoked session is dead even before it expires. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("sessions_actor_idx").on(t.actorType, t.actorId),
+    index("sessions_expires_idx").on(t.expiresAt),
+  ],
 );
 
 /* ==========================================================================
@@ -288,6 +342,44 @@ export const residents = pgTable(
     index("residents_neighborhood_idx").on(t.neighborhoodId),
   ],
 );
+
+/**
+ * Resident (warga) portal accounts.
+ *
+ * Login is keyed to the NIK already printed on the resident's KTP — the one
+ * identifier the village can verify in person when issuing the initial
+ * password. A separate table (rather than columns on `residents`) keeps the
+ * population registry authoritative and credential-free: a resident without an
+ * account simply has no row here.
+ */
+export const residentAccounts = pgTable(
+  "resident_accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    residentId: uuid("resident_id")
+      .notNull()
+      .references(() => residents.id, { onDelete: "cascade" }),
+    /** 16-digit NIK — the login identifier. */
+    nik: varchar("nik", { length: 16 }).notNull(),
+    passwordHash: varchar("password_hash", { length: 200 }).notNull(),
+    active: boolean("active").notNull().default(true),
+    /** Failed login attempts since the last success — drives lockout. */
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("resident_accounts_resident_uq").on(t.residentId),
+    uniqueIndex("resident_accounts_nik_uq").on(t.nik),
+    index("resident_accounts_village_idx").on(t.villageId),
+  ],
+);
+
 
 /**
  * Population mutations (kelahiran, kematian, pindah datang/keluar).
@@ -650,6 +742,18 @@ export const staffShiftsRelations = relations(staffShifts, ({ one }) => ({
   staff: one(staff, { fields: [staffShifts.staffId], references: [staff.id] }),
 }));
 
+export const sessionsRelations = relations(sessions, ({ one }) => ({
+  village: one(villages, { fields: [sessions.villageId], references: [villages.id] }),
+}));
+
+export const residentAccountsRelations = relations(residentAccounts, ({ one }) => ({
+  village: one(villages, { fields: [residentAccounts.villageId], references: [villages.id] }),
+  resident: one(residents, {
+    fields: [residentAccounts.residentId],
+    references: [residents.id],
+  }),
+}));
+
 export const familiesRelations = relations(families, ({ one, many }) => ({
   village: one(villages, { fields: [families.villageId], references: [villages.id] }),
   neighborhood: one(neighborhoods, {
@@ -771,6 +875,8 @@ export type Hamlet = typeof hamlets.$inferSelect;
 export type Neighborhood = typeof neighborhoods.$inferSelect;
 export type Staff = typeof staff.$inferSelect;
 export type StaffShift = typeof staffShifts.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
+export type ResidentAccount = typeof residentAccounts.$inferSelect;
 export type Family = typeof families.$inferSelect;
 export type Resident = typeof residents.$inferSelect;
 export type ResidentMutation = typeof residentMutations.$inferSelect;
@@ -791,6 +897,7 @@ export type RequestStatus = (typeof requestStatusEnum.enumValues)[number];
 export type LetterAttachmentStatus = (typeof attachmentStatusEnum.enumValues)[number];
 export type ActivityKind = (typeof activityKindEnum.enumValues)[number];
 export type StaffRole = (typeof staffRoleEnum.enumValues)[number];
+export type SessionActorType = (typeof sessionActorEnum.enumValues)[number];
 
 /** Recursive `created_at` trigger helper reused by the migration script. */
 export const touchUpdatedAt = sql`updated_at = now()`;

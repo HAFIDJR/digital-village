@@ -1,4 +1,5 @@
 import { readEsignPassphrase } from "@/lib/esign";
+import { DEMO_STAFF_PASSWORD, DEMO_WARGA_NIK, DEMO_WARGA_PASSWORD } from "@/lib/auth/demo";
 
 import { runMigrations } from "../migrate";
 import { seedDatabase } from "../seed";
@@ -14,10 +15,11 @@ async function main() {
     const result = await seedDatabase({ reset });
     if (result.skipped) {
       console.log(`[seed] skipped — ${result.reason}. Use --reset to rebuild.`);
-      console.log(`[seed] Desa Sukamaju populated in ${result.durationMs}ms`);
-      console.table(result.counts);
       return;
     }
+
+    console.log(`[seed] Desa Sukamaju populated in ${result.durationMs}ms`);
+    console.table(result.counts);
   } catch (error) {
     console.error("[seed] error:", error);
 
@@ -36,6 +38,10 @@ async function main() {
       ? `[seed] e-sign passphrase (training default): ${esign.passphrase}`
       : "[seed] e-sign passphrase taken from ESIGN_PASSPHRASE",
   );
+
+  // Local dev seed credentials — see README.md ("Akun Demo").
+  console.log(`[seed] staff login: any seeded email + "${DEMO_STAFF_PASSWORD}"`);
+  console.log(`[seed] warga login: NIK ${DEMO_WARGA_NIK} + "${DEMO_WARGA_PASSWORD}"`);
 }
 
 /** Drizzle wraps driver errors; unwrap the chain so the real cause is legible. */

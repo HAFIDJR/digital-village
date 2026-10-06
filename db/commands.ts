@@ -8,13 +8,19 @@
  */
 import "server-only";
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { getDb } from "./client";
 import * as t from "./schema";
 import type { AnnouncementDraft, VerifyRequestInput } from "@/lib/validators";
 import { REQUEST_STATUS } from "@/lib/domain";
-import { verifyPassphrase } from "@/lib/esign-server";
+import { verifyPassword } from "@/lib/auth/password";
+import { hashPassword } from "@/lib/auth/password";
+import {
+  LOCKOUT_MS,
+  MAX_SIGN_ATTEMPTS,
+  lockoutMinutesLeft,
+} from "@/lib/auth/policy";
 import type { RequestStatus } from "./schema";
 
 /* -------------------------------------------------------------------------- */
@@ -23,6 +29,8 @@ import type { RequestStatus } from "./schema";
 
 type Db = Awaited<ReturnType<typeof getDb>>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Commands run either on the pool or inside a transaction. */
+type DbOrTx = Db | Tx;
 
 export class DomainError extends Error {
   constructor(
@@ -61,7 +69,10 @@ type AuditEntry = {
   meta?: Record<string, unknown>;
 };
 
-async function writeAudit(tx: Tx, villageId: string, entry: AuditEntry) {
+/** Accepts both the plain db handle and an in-flight transaction. */
+type AuditWriter = { insert: Db["insert"] };
+
+async function writeAudit(tx: AuditWriter, villageId: string, entry: AuditEntry) {
   await tx.insert(t.activityLog).values({
     villageId,
     kind: entry.kind,
@@ -77,14 +88,86 @@ async function writeAudit(tx: Tx, villageId: string, entry: AuditEntry) {
   });
 }
 
-async function loadStaff(tx: Tx, staffId: string) {
+/**
+ * Audit write for events that happen *outside* a domain transaction — logins,
+ * logouts, rejected credentials. Writing it standalone means a rollback
+ * elsewhere can never silently swallow an accountability record.
+ *
+ * As everywhere else: never include passwords or passphrases, only outcomes.
+ */
+export async function appendAudit(villageId: string, entry: AuditEntry) {
+  const db = await getDb();
+  await writeAudit(db, villageId, entry);
+}
+
+/** Starts a shift for a staff member if none is open — login is the clock-in. */
+export async function openStaffShift(input: {
+  staffId: string;
+  station: string;
+  ipAddress?: string | null;
+}) {
+  const db = await getDb();
+  const [open] = await db
+    .select({ id: t.staffShifts.id })
+    .from(t.staffShifts)
+    .where(and(eq(t.staffShifts.staffId, input.staffId), isNull(t.staffShifts.endedAt)))
+    .limit(1);
+  if (open) return { reopened: false as const, shiftId: open.id };
+
+  const [shift] = await db
+    .insert(t.staffShifts)
+    .values({
+      staffId: input.staffId,
+      station: input.station,
+      ipAddress: input.ipAddress ?? null,
+    })
+    .returning({ id: t.staffShifts.id });
+  return { reopened: true as const, shiftId: shift.id };
+}
+
+/** Closes every open shift of a staff member — logout is the clock-out. */
+export async function closeOpenStaffShifts(staffId: string) {
+  const db = await getDb();
+  await db
+    .update(t.staffShifts)
+    .set({ endedAt: new Date() })
+    .where(and(eq(t.staffShifts.staffId, staffId), isNull(t.staffShifts.endedAt)));
+}
+
+/** Resets the e-sign failure counters after a successful ceremony. */
+async function resetSignAttempts(db: Db, staffId: string) {
+  await db
+    .update(t.staff)
+    .set({ signAttempts: 0, signLockedUntil: null })
+    .where(eq(t.staff.id, staffId));
+}
+
+/**
+ * Records a failed e-sign passphrase attempt and locks the certificate after
+ * too many. Returns the state the caller needs for an accurate (but never
+ * secret-revealing) message.
+ */
+async function registerFailedSignAttempt(db: Db, staff: t.Staff) {
+  const attempts = (staff.signAttempts ?? 0) + 1;
+  const locked = attempts >= MAX_SIGN_ATTEMPTS;
+  await db
+    .update(t.staff)
+    .set({
+      signAttempts: attempts,
+      ...(locked ? { signLockedUntil: new Date(Date.now() + LOCKOUT_MS) } : {}),
+    })
+    .where(eq(t.staff.id, staff.id));
+  return { attempts, locked };
+}
+
+async function loadStaff(tx: DbOrTx, staffId: string) {
   const [row] = await tx.select().from(t.staff).where(eq(t.staff.id, staffId)).limit(1);
   if (!row) throw new DomainError("Petugas tidak ditemukan", "STAFF_NOT_FOUND", 404);
   if (!row.active) throw new DomainError("Akun petugas tidak aktif", "STAFF_INACTIVE", 403);
   return row;
 }
 
-async function loadRequest(tx: Tx, villageId: string, requestId: string) {
+async function loadRequest(tx: DbOrTx, villageId: string, requestId: string) {
   const [row] = await tx
     .select()
     .from(t.letterRequests)
@@ -332,34 +415,69 @@ export async function signLetterRequest(input: {
 }) {
   const db = await getDb();
 
+  // Credential gate first, deliberately outside the ceremony transaction:
+  // failed-attempt bookkeeping must survive even though nothing else changes.
+  const staff = await loadStaff(db, input.staffId);
+  if (!staff.canSign) {
+    throw new DomainError(
+      "Hanya Kepala Desa yang berwenang menandatangani surat.",
+      "NOT_AUTHORISED_SIGNER",
+      403,
+    );
+  }
+
+  if (staff.signLockedUntil && staff.signLockedUntil.getTime() > Date.now()) {
+    throw new DomainError(
+      `Sertifikat tanda tangan terkunci sementara karena terlalu banyak percobaan gagal. Coba lagi dalam ${lockoutMinutesLeft(staff.signLockedUntil)} menit.`,
+      "SIGN_LOCKED",
+      429,
+    );
+  }
+
+  // The ceremony is the last gate before a document becomes legally valid, so
+  // the passphrase is actually verified — an unactivated credential fails
+  // closed instead of signing with whatever was typed.
+  if (!staff.signaturePassphraseHash) {
+    throw new DomainError(
+      "Sertifikat tanda tangan elektronik Anda belum diaktivasi. Aktivasikan melalui menu \"Profil & Hak Akses\".",
+      "SIGNATURE_NOT_ACTIVATED",
+      409,
+    );
+  }
+  if (!verifyPassword(input.passphrase, staff.signaturePassphraseHash)) {
+    const state = await registerFailedSignAttempt(db, staff);
+    await appendAudit(input.villageId, {
+      kind: "KEAMANAN_AKUN",
+      summary: state.locked
+        ? `Sertifikat tanda tangan ${staff.fullName} terkunci setelah ${state.attempts} percobaan frasa sandi gagal.`
+        : `Percobaan frasa sandi tanda tangan gagal untuk ${staff.fullName} (${state.attempts}/${MAX_SIGN_ATTEMPTS}).`,
+      subjectType: "staff",
+      subjectId: staff.id,
+      actor: {
+        id: staff.id,
+        name: staff.fullName,
+        initials: staff.initials,
+        role: staff.jobTitle,
+      },
+      // Attempts and outcome only — never the passphrase that was tried.
+      meta: { attempts: state.attempts, locked: state.locked },
+    });
+    if (state.locked) {
+      throw new DomainError(
+        "Frasa sandi tidak sesuai dan sertifikat kini terkunci sementara. Hubungi administrator desa bila ini keliruan.",
+        "SIGN_LOCKED",
+        429,
+      );
+    }
+    throw new DomainError(
+      "Frasa sandi sertifikat tidak sesuai. Periksa kembali frasa sandi BSrE Anda.",
+      "INVALID_PASSPHRASE",
+      401,
+    );
+  }
+  await resetSignAttempts(db, staff.id);
+
   return db.transaction(async (tx) => {
-    const staff = await loadStaff(tx, input.staffId);
-    if (!staff.canSign) {
-      throw new DomainError(
-        "Hanya Kepala Desa yang berwenang menandatangani surat.",
-        "NOT_AUTHORISED_SIGNER",
-        403,
-      );
-    }
-
-    // The ceremony is the last gate before a document becomes legally valid, so
-    // the passphrase is actually verified — an unactivated credential fails
-    // closed instead of signing with whatever was typed.
-    if (!staff.signaturePassphraseHash) {
-      throw new DomainError(
-        "Sertifikat tanda tangan elektronik pejabat ini belum diaktivasi. Hubungi administrator desa.",
-        "SIGNATURE_NOT_ACTIVATED",
-        409,
-      );
-    }
-    if (!verifyPassphrase(input.passphrase, staff.signaturePassphraseHash)) {
-      throw new DomainError(
-        "Frasa sandi sertifikat tidak sesuai. Periksa kembali frasa sandi BSrE Anda.",
-        "INVALID_PASSPHRASE",
-        401,
-      );
-    }
-
     const request = await loadRequest(tx, input.villageId, input.requestId);
     if (request.status !== "MENUNGGU_TTD_KADES") {
       throw new DomainError(
@@ -406,6 +524,80 @@ export async function signLetterRequest(input: {
 
     return { request: updatedRequest, certificateSerial: serial };
   });
+}
+
+/**
+ * Self-service activation (or rotation) of the signer's e-sign passphrase.
+ *
+ * A signer with `canSign` can bootstrap their own credential while logged in;
+ * once one exists, rotating it requires the current passphrase, so a stray
+ * browser can never silently take over the certificate.
+ */
+export async function activateSignaturePassphrase(input: {
+  villageId: string;
+  staffId: string;
+  currentPassphrase?: string;
+  newPassphrase: string;
+}) {
+  const db = await getDb();
+  const staff = await loadStaff(db, input.staffId);
+  if (!staff.canSign) {
+    throw new DomainError(
+      "Hanya pejabat penanda tangan yang dapat mengaktivasi sertifikat tanda tangan.",
+      "NOT_AUTHORISED_SIGNER",
+      403,
+    );
+  }
+
+  const rotating = Boolean(staff.signaturePassphraseHash);
+  if (rotating) {
+    if (staff.signLockedUntil && staff.signLockedUntil.getTime() > Date.now()) {
+      throw new DomainError(
+        `Aktivasi sertifikat terkunci sementara. Coba lagi dalam ${lockoutMinutesLeft(staff.signLockedUntil)} menit.`,
+        "SIGN_LOCKED",
+        429,
+      );
+    }
+    if (!input.currentPassphrase || !verifyPassword(input.currentPassphrase, staff.signaturePassphraseHash)) {
+      const state = await registerFailedSignAttempt(db, staff);
+      await appendAudit(input.villageId, {
+        kind: "KEAMANAN_AKUN",
+        summary: `Percobaan penggantian frasa sandi tanda tangan gagal untuk ${staff.fullName} (${state.attempts}/${MAX_SIGN_ATTEMPTS}).`,
+        subjectType: "staff",
+        subjectId: staff.id,
+        actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+        meta: { scope: "activation", attempts: state.attempts, locked: state.locked },
+      });
+      throw new DomainError(
+        "Frasa sandi saat ini tidak sesuai.",
+        "INVALID_PASSPHRASE",
+        401,
+      );
+    }
+  }
+
+  await db
+    .update(t.staff)
+    .set({
+      signaturePassphraseHash: hashPassword(input.newPassphrase),
+      signAttempts: 0,
+      signLockedUntil: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(t.staff.id, staff.id));
+
+  await appendAudit(input.villageId, {
+    kind: "AKTIVASI_TTD",
+    summary: rotating
+      ? `${staff.fullName} mengganti frasa sandi sertifikat tanda tangan elektroniknya.`
+      : `${staff.fullName} mengaktivasi sertifikat tanda tangan elektroniknya.`,
+    subjectType: "staff",
+    subjectId: staff.id,
+    actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+    meta: { rotated: rotating },
+  });
+
+  return { activated: true as const, rotated: rotating as boolean };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -519,6 +711,47 @@ export async function markRequestCollected(input: {
     });
 
     return { completedAt: now };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resident portal downloads                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Audits a resident downloading their own signed letter from the portal.
+ *
+ * Deliberately audit-only: unlike a loket print run it does not advance the
+ * request lifecycle — the letter only leaves the village's custody when it is
+ * handed over at the counter.
+ */
+export async function recordResidentDownload(input: {
+  villageId: string;
+  requestId: string;
+  ticket: string;
+  verificationCode: string;
+  residentId: string;
+  residentName: string;
+}) {
+  const initials = input.residentName
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word.charAt(0).toUpperCase())
+    .join("");
+
+  await appendAudit(input.villageId, {
+    kind: "CETAK_SURAT",
+    summary: `Salinan final ${input.ticket} diunduh oleh pemohon ${input.residentName} melalui portal warga.`,
+    subjectType: "letter_request",
+    subjectId: input.requestId,
+    subjectRef: input.ticket,
+    actor: {
+      id: null,
+      name: input.residentName,
+      initials: initials || "W",
+      role: "Warga (Portal)",
+    },
+    meta: { channel: "PORTAL_WARGA", qr: input.verificationCode },
   });
 }
 

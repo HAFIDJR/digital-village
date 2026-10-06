@@ -31,14 +31,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, Kbd } from "@/components/ui/primitives";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { NOTIFICATION_SEVERITY, STAFF_ROLE, TONE_CLASSES } from "@/lib/domain";
+import { NOTIFICATION_SEVERITY, ROLE_CAPABILITIES, STAFF_ROLE, TONE_CLASSES } from "@/lib/domain";
 import { formatClock, formatLongDate, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ActiveOfficer, NotificationEntry, VillageProfile } from "@/db/queries";
-import { useMarkNotificationsReadMutation } from "@/store/api";
+import type { StaffRole } from "@/db/schema";
+import { errorMessage, useLogoutMutation, useMarkNotificationsReadMutation } from "@/store/api";
 import { useAppDispatch } from "@/store";
 import { uiActions } from "@/store/ui-slice";
 import { useNow } from "./now-context";
+import { OfficerProfileDialog } from "./officer-profile-dialog";
 import { VillageSeal } from "./village-seal";
 
 /**
@@ -399,6 +401,8 @@ function OfficerMenu({
   village: VillageProfile;
 }) {
   const dispatch = useAppDispatch();
+  const [profileOpen, setProfileOpen] = React.useState(false);
+  const [logout, logoutState] = useLogoutMutation();
 
   if (!officer) {
     return (
@@ -409,8 +413,31 @@ function OfficerMenu({
     );
   }
 
+  const canManageSettings =
+    ROLE_CAPABILITIES[officer.role as StaffRole]?.manageSettings ?? false;
+
+  // "Akhiri Shift & Keluar": the server closes the open shift, revokes the
+  // session row and clears the cookie — then we hard-navigate so no stale
+  // officer state survives in the store.
+  const endShift = async () => {
+    try {
+      const result = await logout().unwrap();
+      window.location.assign(result.redirectTo);
+    } catch (error) {
+      dispatch(
+        uiActions.toastShown({
+          id: `logout-${Date.now()}`,
+          tone: "danger",
+          title: "Gagal mengakhiri shift",
+          body: errorMessage(error),
+        }),
+      );
+    }
+  };
+
   return (
-    <DropdownMenu>
+    <>
+      <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -453,14 +480,27 @@ function OfficerMenu({
           Cari Data Warga
           <DropdownMenuShortcut>/</DropdownMenuShortcut>
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem onSelect={() => setProfileOpen(true)}>
           <UserCog aria-hidden />
           Profil &amp; Hak Akses
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <Settings aria-hidden />
-          Pengaturan Desa
-        </DropdownMenuItem>
+        {canManageSettings ? (
+          <DropdownMenuItem asChild>
+            <a href="/pengaturan">
+              <Settings aria-hidden />
+              Pengaturan Desa
+            </a>
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem
+            disabled
+            aria-disabled
+            title="Hanya Operator Desa, Sekretaris Desa, dan Kepala Desa yang dapat membuka pengaturan."
+          >
+            <Settings aria-hidden />
+            Pengaturan Desa
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuSeparator />
         <div className="px-2 py-1.5">
@@ -471,11 +511,28 @@ function OfficerMenu({
           </p>
         </div>
         <DropdownMenuSeparator />
-        <DropdownMenuItem tone="danger" disabled>
+        <DropdownMenuItem
+          tone="danger"
+          onSelect={(event) => {
+            // Keep the menu open while the request is in flight; the hard
+            // navigation at the end takes over the whole page anyway.
+            event.preventDefault();
+            void endShift();
+          }}
+          disabled={logoutState.isLoading}
+        >
           <LogOut aria-hidden />
-          Akhiri Shift &amp; Keluar
+          {logoutState.isLoading ? "Mengakhiri shift…" : "Akhiri Shift & Keluar"}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+
+    {/* Rendered outside the dropdown so it survives the menu closing. */}
+    <OfficerProfileDialog
+      officer={officer}
+      open={profileOpen}
+      onOpenChange={setProfileOpen}
+    />
+    </>
   );
 }

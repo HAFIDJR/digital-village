@@ -3,6 +3,8 @@ import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 
 import { getDb } from "./client";
+import { getSessionId } from "@/lib/auth/session";
+import { readEsignTrainingHint } from "@/lib/esign";
 import type { QueueQuery, RegistryQuery, ReportQuery } from "@/lib/validators";
 
 
@@ -32,6 +34,8 @@ export type ActiveOfficer = {
   nipd: string | null;
   email: string;
   canSign: boolean;
+  /** Whether the signer has activated their e-sign certificate passphrase. */
+  signatureActivated: boolean;
   shiftStartedAt: string | null;
   shiftStation: string | null;
 };
@@ -314,7 +318,16 @@ export async function getVillageProfile(): Promise<VillageProfile | null> {
   return result.rows[0] ?? null;
 }
 
+/**
+ * Who is logged in — resolved from the session cookie, never from the shift
+ * table. The shift row only powers the "Shift Aktif" indicator; identity
+ * always comes from `sessions`, so this returns null the moment a session is
+ * revoked, expired or belongs to a resident.
+ */
 export async function getActiveOfficer(villageId: string): Promise<ActiveOfficer | null> {
+  const sessionId = await getSessionId();
+  if (!sessionId) return null;
+
   const db = await getDb();
   const result = await db.execute<ActiveOfficer>(sql`
     select s.id,
@@ -325,14 +338,25 @@ export async function getActiveOfficer(villageId: string): Promise<ActiveOfficer
            s.nipd,
            s.email,
            s.can_sign        as "canSign",
+           (s.signature_passphrase_hash is not null) as "signatureActivated",
            sh.started_at     as "shiftStartedAt",
            sh.station        as "shiftStation"
-    from staff s
-    left join staff_shifts sh
-      on sh.staff_id = s.id and sh.ended_at is null
-    where s.village_id = ${villageId}
-      and s.active = true
-    order by (sh.started_at is null), s.created_at
+    from sessions ses
+    join staff s
+      on s.id = ses.actor_id
+     and s.village_id = ${villageId}
+     and s.active = true
+    left join lateral (
+      select started_at, station
+      from staff_shifts
+      where staff_id = s.id and ended_at is null
+      order by started_at desc
+      limit 1
+    ) sh on true
+    where ses.id = ${sessionId}
+      and ses.actor_type = 'STAFF'
+      and ses.revoked_at is null
+      and ses.expires_at > now()
     limit 1
   `);
   return result.rows[0] ?? null;
@@ -2075,6 +2099,12 @@ export type ShellPayload = {
     families: number;
     announcementsPublished: number;
   };
+  /**
+   * Dev-only e-sign passphrase hint for the seeded demo signer. Null in
+   * production or when a real ESIGN_PASSPHRASE is configured — the value is
+   * resolved server-side so it never lands in a client bundle by accident.
+   */
+  esignTrainingHint: string | null;
   serverTime: string;
 };
 
@@ -2130,6 +2160,123 @@ export async function getShellPayload(): Promise<ShellPayload | null> {
       families: 0,
       announcementsPublished: 0,
     },
+    esignTrainingHint: officer?.canSign ? readEsignTrainingHint() : null,
     serverTime: new Date().toISOString(),
+  };
+}
+/* -------------------------------------------------------------------------- */
+/* Resident portal                                                             */
+/* -------------------------------------------------------------------------- */
+
+export type ResidentPortalRequest = {
+  id: string;
+  ticket: string;
+  letterName: string;
+  letterCode: string;
+  status: string;
+  priority: string;
+  purpose: string;
+  submittedAt: string;
+  dueAt: string | null;
+  signedAt: string | null;
+  completedAt: string | null;
+  verificationCode: string;
+  certificateSerial: string | null;
+  agendaNumber: number | null;
+  /** A final PDF exists once the Kepala Desa has signed the letter. */
+  downloadable: boolean;
+};
+
+export type ResidentPortalData = {
+  resident: {
+    fullName: string;
+    nik: string;
+    address: string;
+    phone: string | null;
+    dusun: string;
+    rt: number;
+    rw: number;
+  };
+  family: { kkNumber: string | null; headName: string | null; memberCount: number | null } | null;
+  requests: ResidentPortalRequest[];
+};
+
+/**
+ * Everything the resident portal may show, scoped to one resident.
+ *
+ * The applicant filter (`applicant_resident_id`) is the security boundary —
+ * the caller never passes a "which resident" parameter, it is derived from the
+ * session, so one warga account physically cannot list another household's
+ * letters.
+ */
+export async function getResidentPortalData(residentId: string): Promise<ResidentPortalData | null> {
+  const db = await getDb();
+  const base = await db.execute<{
+    fullName: string;
+    nik: string;
+    address: string;
+    phone: string | null;
+    dusun: string;
+    rt: number;
+    rw: number;
+    kkNumber: string | null;
+    headName: string | null;
+    memberCount: number | null;
+  }>(sql`
+    select r.full_name   as "fullName",
+           r.nik,
+           r.address,
+           r.phone,
+           split_part(h.name, ' - ', 1) as dusun,
+           n.rt,
+           n.rw,
+           f.kk_number   as "kkNumber",
+           f.head_name   as "headName",
+           f.member_count as "memberCount"
+    from residents r
+    join neighborhoods n on n.id = r.neighborhood_id
+    join hamlets h on h.id = n.hamlet_id
+    left join families f on f.id = r.family_id
+    where r.id = ${residentId}
+    limit 1
+  `);
+  const profile = base.rows[0];
+  if (!profile) return null;
+
+  const requests = await db.execute<ResidentPortalRequest>(sql`
+    select lr.id,
+           lr.ticket,
+           lt.name        as "letterName",
+           lt.code        as "letterCode",
+           lr.status::text as status,
+           lr.priority::text as priority,
+           lr.purpose,
+           lr.submitted_at  as "submittedAt",
+           lr.due_at        as "dueAt",
+           lr.signed_at     as "signedAt",
+           lr.completed_at  as "completedAt",
+           lr.verification_code as "verificationCode",
+           sr.certificate_serial as "certificateSerial",
+           lr.agenda_number as "agendaNumber",
+           (lr.signed_at is not null
+             and lr.status::text in ('DITANDATANGANI','SIAP_DIAMBIL','SELESAI')) as downloadable
+    from letter_requests lr
+    join letter_types lt on lt.id = lr.letter_type_id
+    left join signature_requests sr on sr.request_id = lr.id and sr.status = 'DITANDATANGANI'
+    where lr.applicant_resident_id = ${residentId}
+    order by lr.submitted_at desc
+    limit 50
+  `);
+
+  return {
+    resident: profile,
+    family: profile.kkNumber
+      ? {
+          kkNumber: profile.kkNumber,
+          headName: profile.headName,
+          memberCount: profile.memberCount,
+        }
+      : null,
+    requests: requests.rows,
   };
 }

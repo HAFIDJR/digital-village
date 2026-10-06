@@ -2,11 +2,8 @@ import { z } from "zod";
 
 import { markNotificationsRead } from "@/db/commands";
 import { DomainError } from "@/db/commands";
-import {
-  getActiveOfficer,
-  getNotifications,
-  getVillageProfile,
-} from "@/db/queries";
+import { getNotifications, getVillageProfile } from "@/db/queries";
+import { requireStaffOfficer } from "@/lib/auth/guard";
 import { uuidSchema } from "@/lib/validators";
 
 import { parseBody, withApi } from "../_lib/respond";
@@ -17,18 +14,14 @@ const markReadSchema = z.object({
   ids: z.array(uuidSchema).max(50).optional(),
 });
 
-async function resolveContext() {
-  const village = await getVillageProfile();
-  if (!village)
-    throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
-  const officer = await getActiveOfficer(village.id);
-  return { village, officer };
-}
-
 export async function GET() {
   return withApi(async () => {
-    const { village, officer } = await resolveContext();
-    const rows = await getNotifications(village.id, officer?.id ?? null, 20);
+    const village = await getVillageProfile();
+    if (!village)
+      throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
+
+    const { officer } = await requireStaffOfficer();
+    const rows = await getNotifications(village.id, officer.id, 20);
     return {
       notifications: rows,
       unread: rows.filter((n) => n.readAt === null).length,
@@ -39,15 +32,11 @@ export async function GET() {
 export function POST(request: Request) {
   return withApi(async () => {
     const { ids } = await parseBody(markReadSchema, request);
-    const { village, officer } = await resolveContext();
+    const { officer } = await requireStaffOfficer();
 
-    if (!officer) {
-      throw new DomainError(
-        "Tidak ada petugas aktif pada shift ini.",
-        "NO_ACTIVE_STAFF",
-        409,
-      );
-    }
+    const village = await getVillageProfile();
+    if (!village)
+      throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
 
     const result = await markNotificationsRead(village.id, officer.id, ids);
     return { ok: true, updated: result.updated };

@@ -1,5 +1,6 @@
 import { getWorkspaceOverview } from "@/db/queries";
 import { DomainError } from "@/db/commands";
+import { requireStaffSession } from "@/lib/auth/guard";
 import { parseQueueQuery } from "@/lib/validators";
 
 import { withApi } from "../_lib/respond";
@@ -10,6 +11,8 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
 
   return withApi(async () => {
+    await requireStaffSession();
+
     const query = parseQueueQuery(params);
 
     const overview = await getWorkspaceOverview(query);
