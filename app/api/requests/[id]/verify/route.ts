@@ -1,5 +1,5 @@
-import { getActiveOfficer, getVillageProfile } from "@/db/queries";
-import { DomainError, verifyLetterRequest } from "@/db/commands";
+import { verifyLetterRequest } from "@/db/commands";
+import { requireStaffCapability } from "@/lib/auth/guard"
 import { verifyRequestSchema } from "@/lib/validators";
 
 import { parseBody, withApi } from "../../../_lib/respond";
@@ -15,20 +15,10 @@ export async function POST(
   return withApi(async () => {
     const payload = await parseBody(verifyRequestSchema, request);
 
-    const village = await getVillageProfile();
-    if (!village)
-      throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
-
-    const officer = await getActiveOfficer(village.id);
-    if (!officer)
-      throw new DomainError(
-        "Tidak ada petugas aktif pada shift ini.",
-        "NO_ACTIVE_STAFF",
-        409,
-      );
+     const { officer, staff } = await requireStaffCapability("verify");
 
     const result = await verifyLetterRequest({
-      villageId: village.id,
+      villageId: staff.villageId,
       requestId: id,
       staffId: officer.id,
       payload,

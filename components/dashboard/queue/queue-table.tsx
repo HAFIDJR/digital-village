@@ -25,8 +25,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { formatNik, formatNumber, formatRelative, formatSla } from "@/lib/format";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  formatNik,
+  formatNumber,
+  formatRelative,
+  formatSla,
+} from "@/lib/format";
 import { REQUEST_CHANNEL } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 import type { QueueRow } from "@/db/queries";
@@ -41,13 +50,27 @@ import {
 } from "../status-badge";
 import { toastFromMutation } from "../feedback";
 
-
 const COLUMNS = [
   { key: "id", label: "ID & Waktu", width: "w-[186px]", align: "left" },
-  { key: "applicant", label: "Nama Pemohon & NIK", width: "w-[196px]", align: "left" },
+  {
+    key: "applicant",
+    label: "Nama Pemohon & NIK",
+    width: "w-[196px]",
+    align: "left",
+  },
   { key: "type", label: "Jenis Surat", width: "w-[196px]", align: "left" },
-  { key: "region", label: "Dusun / RT / RW", width: "w-[124px]", align: "left" },
-  { key: "docs", label: "Kelengkapan Berkas", width: "w-[148px]", align: "left" },
+  {
+    key: "region",
+    label: "Dusun / RT / RW",
+    width: "w-[124px]",
+    align: "left",
+  },
+  {
+    key: "docs",
+    label: "Kelengkapan Berkas",
+    width: "w-[148px]",
+    align: "left",
+  },
   { key: "status", label: "Status", width: "w-[164px]", align: "left" },
   { key: "actions", label: "Tindakan", width: "w-[148px]", align: "right" },
 ] as const;
@@ -131,9 +154,12 @@ const QueueTableRow = React.memo(function QueueTableRow({
   const sla = formatSla(row.dueAt, now);
   const age = formatRelative(row.submittedAt, now, true);
   const ageLabel = age === "baru" ? age : `${age} lalu`;
-  const isOpen = ["PENDING_VERIFIKASI", "BERKAS_TIDAK_LENGKAP", "DIVERIFIKASI", "MENUNGGU_TTD_KADES"].includes(
-    row.status,
-  );
+  const isOpen = [
+    "PENDING_VERIFIKASI",
+    "BERKAS_TIDAK_LENGKAP",
+    "DIVERIFIKASI",
+    "MENUNGGU_TTD_KADES",
+  ].includes(row.status);
 
   const openDrawer = React.useCallback(() => {
     dispatch(queueActions.requestSelected(row.id));
@@ -147,20 +173,41 @@ const QueueTableRow = React.memo(function QueueTableRow({
     }
   };
 
-
   const approve = async () => {
-    const result = await verify({ id: row.id, body: { action: "setujui", expedite: false } }).unwrap();
-    toastFromMutation(dispatch, {
-      tone: "success",
-      title:
-        result.status === "MENUNGGU_TTD_KADES"
-          ? `${result.ticket} diteruskan ke tanda tangan`
-          : `${result.ticket} dinyatakan lengkap`,
-      body:
-        result.status === "MENUNGGU_TTD_KADES"
-          ? `${result.letterTypeName} atas nama ${row.applicantName} kini menunggu TTD Kepala Desa.`
-          : `Berkas ${result.letterTypeName} atas nama ${row.applicantName} lolos verifikasi kelengkapan.`,
-    });
+    try {
+      const result = await verify({
+        id: row.id,
+        body: { action: "setujui", expedite: false },
+      }).unwrap();
+      toastFromMutation(dispatch, {
+        tone: "success",
+        title:
+          result.status === "MENUNGGU_TTD_KADES"
+            ? `${result.ticket} diteruskan ke tanda tangan`
+            : `${result.ticket} dinyatakan lengkap`,
+        body:
+          result.status === "MENUNGGU_TTD_KADES"
+            ? `${result.letterTypeName} atas nama ${row.applicantName} kini menunggu TTD Kepala Desa.`
+            : `Berkas ${result.letterTypeName} atas nama ${row.applicantName} lolos verifikasi kelengkapan.`,
+      });
+    } catch (error) {
+      const message =
+        typeof error === "object" && error !== null && "data" in error
+          ? (
+              error as {
+                data?: {
+                  error?: { message?: string };
+                };
+              }
+            ).data?.error?.message
+          : undefined;
+
+      toastFromMutation(dispatch, {
+        tone: "danger",
+        title: "Verifikasi gagal",
+        body: message ?? "Terjadi kesalahan saat memverifikasi berkas.",
+      });
+    }
   };
 
   const reject = async () => {
@@ -168,7 +215,9 @@ const QueueTableRow = React.memo(function QueueTableRow({
       id: row.id,
       body: {
         action: "minta_perbaikan",
-        note: row.complianceNote ?? "Berkas belum memenuhi syarat, mohon dilengkapi.",
+        note:
+          row.complianceNote ??
+          "Berkas belum memenuhi syarat, mohon dilengkapi.",
         expedite: false,
       },
     }).unwrap();
@@ -191,7 +240,9 @@ const QueueTableRow = React.memo(function QueueTableRow({
         "group border-b border-line transition-colors",
         density === "compact" ? "h-9" : "h-12",
         "cursor-pointer",
-        isSelected ? "bg-civic-soft hover:bg-civic-soft-hover" : "hover:bg-surface-muted",
+        isSelected
+          ? "bg-civic-soft hover:bg-civic-soft-hover"
+          : "hover:bg-surface-muted",
         isFocused && !isSelected && "bg-surface-muted",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-civic/60",
       )}
@@ -206,13 +257,20 @@ const QueueTableRow = React.memo(function QueueTableRow({
             <PriorityMarker priority={row.priority} />
           </span>
           <span className="flex items-center gap-1.5 whitespace-nowrap text-2xs leading-4 text-fg-subtle">
-            <span className="tnum" title={`Diajukan ${formatRelative(row.submittedAt, now)}`}>
+            <span
+              className="tnum"
+              title={`Diajukan ${formatRelative(row.submittedAt, now)}`}
+            >
               {ageLabel}
             </span>
             <span aria-hidden className="text-line-strong">
               ·
             </span>
-            <SlaIndicator slaMinutes={row.slaMinutes} label={sla.label} tone={sla.tone} />
+            <SlaIndicator
+              slaMinutes={row.slaMinutes}
+              label={sla.label}
+              tone={sla.tone}
+            />
           </span>
         </div>
       </td>
@@ -220,7 +278,10 @@ const QueueTableRow = React.memo(function QueueTableRow({
       {/* --- 2. Nama pemohon & NIK ---------------------------------------- */}
       <td className="min-w-0 px-3 align-middle">
         <div className="flex min-w-0 flex-col justify-center gap-0.5">
-          <span className="truncate text-xs font-medium leading-4 text-fg" title={row.applicantName}>
+          <span
+            className="truncate text-xs font-medium leading-4 text-fg"
+            title={row.applicantName}
+          >
             {row.applicantName}
           </span>
           <span className="flex items-center gap-1.5">
@@ -235,7 +296,11 @@ const QueueTableRow = React.memo(function QueueTableRow({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="shrink-0 rounded-xs border border-line bg-surface-muted px-1 text-[10px] font-medium text-fg-subtle">
-                    {row.channel === "LOKET" ? "LOK" : row.channel === "WHATSAPP" ? "WA" : "WEB"}
+                    {row.channel === "LOKET"
+                      ? "LOK"
+                      : row.channel === "WHATSAPP"
+                        ? "WA"
+                        : "WEB"}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
@@ -259,7 +324,10 @@ const QueueTableRow = React.memo(function QueueTableRow({
             {row.letterCode}
           </Badge>
 
-          <span className="truncate text-xs leading-4 text-fg-muted" title={row.letterName}>
+          <span
+            className="truncate text-xs leading-4 text-fg-muted"
+            title={row.letterName}
+          >
             <span aria-hidden>{shortLetterName(row.letterName)}</span>
             <span className="sr-only">{row.letterName}</span>
           </span>
@@ -272,13 +340,13 @@ const QueueTableRow = React.memo(function QueueTableRow({
           <div className="flex min-w-0 flex-col leading-4">
             <span className="truncate text-xs text-fg">{row.dusun}</span>
             <span className="tnum font-mono text-2xs text-fg-subtle">
-              RT {String(row.rt).padStart(2, "0")}/RW {String(row.rw).padStart(2, "0")}
+              RT {String(row.rt).padStart(2, "0")}/RW{" "}
+              {String(row.rw).padStart(2, "0")}
             </span>
           </div>
         </div>
       </td>
 
-      {/* --- 5. Kelengkapan berkas ---------------------------------------- */}
       <td className="px-3 align-middle">
         <DocumentBadge
           uploaded={row.documentsUploaded}
@@ -293,11 +361,16 @@ const QueueTableRow = React.memo(function QueueTableRow({
         <div className="flex flex-col items-start gap-0.5">
           <RequestStatusBadge status={row.status} />
           {row.assignedTo ? (
-            <span className="truncate text-2xs leading-4 text-fg-subtle" title={row.assignedTo}>
+            <span
+              className="truncate text-2xs leading-4 text-fg-subtle"
+              title={row.assignedTo}
+            >
               Petugas: {row.assignedTo.replace(/,.*$/, "")}
             </span>
           ) : (
-            <span className="text-2xs leading-4 text-fg-subtle">Belum ditugaskan</span>
+            <span className="text-2xs leading-4 text-fg-subtle">
+              Belum ditugaskan
+            </span>
           )}
         </div>
       </td>
@@ -334,7 +407,9 @@ const QueueTableRow = React.memo(function QueueTableRow({
                   <Check aria-hidden />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Setujui &amp; teruskan</TooltipContent>
+              <TooltipContent side="bottom">
+                Setujui &amp; teruskan
+              </TooltipContent>
             </Tooltip>
           ) : (
             <Tooltip>
@@ -345,7 +420,11 @@ const QueueTableRow = React.memo(function QueueTableRow({
                   asChild
                   aria-label={`Buka berkas arsip ${row.ticket}`}
                 >
-                  <a href={letterPdfUrl(row.id, "draft", 1)} target="_blank" rel="noreferrer">
+                  <a
+                    href={letterPdfUrl(row.id, "draft", 1)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     <Printer aria-hidden />
                   </a>
                 </Button>
@@ -356,7 +435,11 @@ const QueueTableRow = React.memo(function QueueTableRow({
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-xs" aria-label={`Tindakan lain untuk ${row.ticket}`}>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`Tindakan lain untuk ${row.ticket}`}
+              >
                 <MoreHorizontal aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -368,13 +451,21 @@ const QueueTableRow = React.memo(function QueueTableRow({
                 Tinjau berkas lengkap
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <a href={letterPdfUrl(row.id, "draft", 1)} target="_blank" rel="noreferrer">
+                <a
+                  href={letterPdfUrl(row.id, "draft", 1)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   <Printer aria-hidden />
                   Cetak draf surat (PDF)
                 </a>
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <a href={letterPdfUrl(row.id, "final", 2)} target="_blank" rel="noreferrer">
+                <a
+                  href={letterPdfUrl(row.id, "final", 2)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   <ShieldCheck aria-hidden />
                   Cetak final + arsip (2 lembar)
                 </a>
@@ -392,7 +483,9 @@ const QueueTableRow = React.memo(function QueueTableRow({
                   </DropdownMenuItem>
                 </>
               ) : (
-                <DropdownMenuItem disabled>Berkas sudah selesai diproses</DropdownMenuItem>
+                <DropdownMenuItem disabled>
+                  Berkas sudah selesai diproses
+                </DropdownMenuItem>
               )}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -401,7 +494,6 @@ const QueueTableRow = React.memo(function QueueTableRow({
     </tr>
   );
 });
-
 
 function EmptyState() {
   const dispatch = useAppDispatch();
@@ -416,11 +508,15 @@ function EmptyState() {
           Tidak ada pengajuan yang cocok
         </p>
         <p className="max-w-sm text-2xs leading-4 text-fg-subtle">
-          Saringan yang aktif tidak menemukan berkas apa pun. Coba longgarkan filter atau bersihkan
-          seluruh saringan untuk melihat semua antrean.
+          Saringan yang aktif tidak menemukan berkas apa pun. Coba longgarkan
+          filter atau bersihkan seluruh saringan untuk melihat semua antrean.
         </p>
       </div>
-      <Button variant="secondary" size="sm" onClick={() => dispatch(queueActions.filtersCleared())}>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => dispatch(queueActions.filtersCleared())}
+      >
         <X aria-hidden />
         Bersihkan semua saringan
       </Button>
@@ -438,7 +534,10 @@ function QueueTableSkeleton() {
         ))}
       </div>
       {Array.from({ length: 8 }).map((_, index) => (
-        <div key={index} className="flex h-11 items-center gap-3 border-b border-line px-3">
+        <div
+          key={index}
+          className="flex h-11 items-center gap-3 border-b border-line px-3"
+        >
           <div className="w-46.5 space-y-1.5">
             <Skeleton className="h-3 w-16" />
             <Skeleton className="h-2.5 w-20" />
@@ -471,7 +570,6 @@ function QueueTableSkeleton() {
   );
 }
 
-
 export function QueueAlertStrip({
   overdueTotal,
   unprocessedTotal,
@@ -486,7 +584,8 @@ export function QueueAlertStrip({
       <div className="flex items-center gap-2 border-b border-line bg-approved-bg/60 px-3.5 py-1.5">
         <ShieldCheck className="size-3.5 shrink-0 text-approved" aria-hidden />
         <p className="text-2xs text-approved">
-          Seluruh {formatNumber(total)} pengajuan berada dalam batas waktu pelayanan.
+          Seluruh {formatNumber(total)} pengajuan berada dalam batas waktu
+          pelayanan.
         </p>
       </div>
     );
@@ -496,32 +595,49 @@ export function QueueAlertStrip({
     <div
       className={cn(
         "flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3.5 py-1.5",
-        overdueTotal > 0 ? "border-rejected-line/40 bg-rejected-bg/60" : "border-pending-line/40 bg-pending-bg/60",
+        overdueTotal > 0
+          ? "border-rejected-line/40 bg-rejected-bg/60"
+          : "border-pending-line/40 bg-pending-bg/60",
       )}
       role="status"
     >
       <span className="flex items-center gap-1.5">
         <CircleAlert
-          className={cn("size-3.5 shrink-0", overdueTotal > 0 ? "text-rejected" : "text-pending")}
+          className={cn(
+            "size-3.5 shrink-0",
+            overdueTotal > 0 ? "text-rejected" : "text-pending",
+          )}
           aria-hidden
         />
-        <span className={cn("text-2xs", overdueTotal > 0 ? "text-rejected" : "text-pending")}>
+        <span
+          className={cn(
+            "text-2xs",
+            overdueTotal > 0 ? "text-rejected" : "text-pending",
+          )}
+        >
           {overdueTotal > 0 ? (
             <>
-              <span className="tnum font-semibold">{formatNumber(overdueTotal)}</span> berkas melewati
-              batas waktu pelayanan (SLA) dan perlu ditindaklanjuti hari ini.
+              <span className="tnum font-semibold">
+                {formatNumber(overdueTotal)}
+              </span>{" "}
+              berkas melewati batas waktu pelayanan (SLA) dan perlu
+              ditindaklanjuti hari ini.
             </>
           ) : (
             <>
-              <span className="tnum font-semibold">{formatNumber(unprocessedTotal)}</span> berkas
-              menunggu verifikasi awal petugas loket.
+              <span className="tnum font-semibold">
+                {formatNumber(unprocessedTotal)}
+              </span>{" "}
+              berkas menunggu verifikasi awal petugas loket.
             </>
           )}
         </span>
       </span>
       <span className="tnum ml-auto text-2xs text-fg-subtle">
         Total pengajuan pada daftar:{" "}
-        <span className="font-semibold text-fg-muted">{formatNumber(total)}</span>
+        <span className="font-semibold text-fg-muted">
+          {formatNumber(total)}
+        </span>
       </span>
     </div>
   );

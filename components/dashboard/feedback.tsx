@@ -62,7 +62,7 @@ export function ToastHost() {
 
   React.useEffect(() => {
     if (!toast) return;
-    const ttl = toast.tone === "danger" ? 0 : 8000;
+    const ttl =  8000;
 
     const timer = window.setTimeout(
       () => dispatch(uiActions.toastDismissed()),

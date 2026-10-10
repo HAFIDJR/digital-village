@@ -30,7 +30,6 @@ import type {
   ReportQuery,
   VerifyRequestInput,
 } from "@/lib/validators";
-import build from "next/dist/build";
 
 export type ApiError = {
   status: number | string;
@@ -192,6 +191,26 @@ export type SignResponse = {
 };
 
 export type PrintResponse = string;
+
+export type LoginResponse = {
+  ok: true;
+  officer: { id: string; fullName: string; jobTitle: string; role: string };
+  redirectTo: string;
+};
+
+export type WargaLoginResponse = {
+  ok: true;
+  resident: { fullName: string };
+  redirectTo: string;
+};
+
+export type LogoutResponse = { ok: true; redirectTo: string };
+
+export type EsignActivationResponse = {
+  ok: true;
+  activated: boolean;
+  rotated: boolean;
+};
 
 export type PublishResponse = {
   ok: true;
@@ -376,6 +395,42 @@ export const villageApi = createApi({
       }),
       invalidatesTags: [TAG.Notifications, TAG.Workspace],
     }),
+    // Auth
+    login: build.mutation<
+      LoginResponse,
+      {
+        email: string;
+        password: string;
+        station?: string;
+        next?: string;
+      }
+    >({
+      query: (body) => ({ url: "auth/login", method: "POST", body }),
+    }),
+
+    wargaLogin: build.mutation<
+      WargaLoginResponse,
+      { nik: string; password: string; next?: string }
+    >({
+      query: (body) => ({ url: "auth/warga/login", method: "POST", body }),
+    }),
+
+    logout: build.mutation<LogoutResponse, void>({
+      query: () => ({ url: "auth/logout", method: "POST", body: {} }),
+      invalidatesTags: [
+        TAG.Workspace,
+        TAG.Notifications,
+        TAG.Queue,
+        TAG.Activity,
+      ],
+    }),
+    activateEsignPassphrase: build.mutation<
+      EsignActivationResponse,
+      { currentPassphrase?: string; newPassphrase: string }
+    >({
+      query: (body) => ({ url: "auth/esign-passphrase", method: "POST", body }),
+      invalidatesTags: [TAG.Workspace, TAG.Staff],
+    }),
   }),
 });
 
@@ -397,6 +452,10 @@ export const {
   useSignRequestMutation,
   usePublishAnnouncementMutation,
   useMarkNotificationsReadMutation,
+  useLoginMutation,
+  useWargaLoginMutation,
+  useLogoutMutation,
+  useActivateEsignPassphraseMutation,
 } = villageApi;
 
 export const villageApiReducerPath = villageApi.reducerPath;

@@ -1,12 +1,7 @@
 import { DomainError, publishAnnouncement } from "@/db/commands";
-import {
-  getActiveOfficer,
-  getAnnouncements,
-  getVillageProfile,
-} from "@/db/queries";
-import { ROLE_CAPABILITIES } from "@/lib/domain";
+import { getAnnouncements, getVillageProfile } from "@/db/queries";
+import { hasCapability, requireStaffOfficer } from "@/lib/auth/guard";
 import { announcementDraftSchema } from "@/lib/validators";
-import type { StaffRole } from "@/db/schema";
 
 import { parseBody, withApi } from "../_lib/respond";
 
@@ -14,6 +9,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   return withApi(async () => {
+    await requireStaffOfficer();
+
     const village = await getVillageProfile();
     if (!village)
       throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
@@ -28,17 +25,9 @@ export async function POST(request: Request) {
     if (!village)
       throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
 
-    const officer = await getActiveOfficer(village.id);
-    if (!officer) {
-      throw new DomainError(
-        "Tidak ada petugas aktif pada shift ini.",
-        "NO_ACTIVE_STAFF",
-        409,
-      );
-    }
+    const { officer } = await requireStaffOfficer();
 
-    const capabilities = ROLE_CAPABILITIES[officer.role as StaffRole];
-    if (!capabilities?.publish) {
+    if (!hasCapability(officer.role, "publish")) {
       throw new DomainError(
         "Jabatan Anda tidak berwenang menerbitkan pengumuman desa.",
         "FORBIDDEN",

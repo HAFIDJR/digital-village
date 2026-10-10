@@ -26,10 +26,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, Kbd, Separator } from "@/components/ui/primitives";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { STAFF_ROLE, TONE_CLASSES } from "@/lib/domain";
+import { ROLE_CAPABILITIES, STAFF_ROLE, TONE_CLASSES } from "@/lib/domain";
 import { formatClock, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ActiveOfficer, VillageProfile } from "@/db/queries";
+import type { StaffRole } from "@/db/schema";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { uiActions } from "@/store/ui-slice";
 
@@ -58,7 +59,11 @@ type NavItem = {
 
 type NavGroup = { id: string; label: string; items: NavItem[] };
 
-function buildGroups(counts: NavCounts, website: string | null): NavGroup[] {
+function buildGroups(
+  counts: NavCounts,
+  website: string | null,
+  canManageSettings: boolean,
+): NavGroup[] {
   const groups: NavGroup[] = [
     {
       id: "operasional",
@@ -189,12 +194,16 @@ function buildGroups(counts: NavCounts, website: string | null): NavGroup[] {
     },
   ];
 
-  return groups.map((group) => ({
-    ...group,
-    items: group.items.map((item) =>
-      item.id === "situs" && website ? { ...item, href: website, external: true } : item,
-    ),
-  }));
+  return groups
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter((item) => item.id !== "pengaturan" || canManageSettings)
+        .map((item) =>
+          item.id === "situs" && website ? { ...item, href: website, external: true } : item,
+        ),
+    }))
+    .filter((group) => group.items.length > 0);
 }
 
 
@@ -220,7 +229,13 @@ export function Sidebar({
   const dispatch = useAppDispatch();
   useAutoCollapseRail();
   const pathname = usePathname();
-  const groups = React.useMemo(() => buildGroups(counts, village.website), [counts, village.website]);
+  const canManageSettings =
+    officer != null &&
+    (ROLE_CAPABILITIES[officer.role as StaffRole]?.manageSettings ?? false);
+  const groups = React.useMemo(
+    () => buildGroups(counts, village.website, canManageSettings),
+    [counts, village.website, canManageSettings],
+  );
 
   return (
     <aside
@@ -286,7 +301,13 @@ export function SidebarDrawer({
   const open = useAppSelector((state) => state.ui.navOpen);
   const dispatch = useAppDispatch();
   const pathname = usePathname();
-  const groups = React.useMemo(() => buildGroups(counts, village.website), [counts, village.website]);
+  const canManageSettings =
+    officer != null &&
+    (ROLE_CAPABILITIES[officer.role as StaffRole]?.manageSettings ?? false);
+  const groups = React.useMemo(
+    () => buildGroups(counts, village.website, canManageSettings),
+    [counts, village.website, canManageSettings],
+  );
 
   const close = React.useCallback(() => dispatch(uiActions.navToggled(false)), [dispatch]);
 

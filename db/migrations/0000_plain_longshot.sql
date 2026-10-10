@@ -1,4 +1,4 @@
-CREATE TYPE "public"."activity_kind" AS ENUM('PENGAJUAN_BARU', 'VERIFIKASI_BERKAS', 'PENOLAKAN', 'PERSETUJUAN', 'TANDA_TANGAN', 'CETAK_SURAT', 'MUTASI_PENDUDUK', 'PENGUMUMAN', 'MASUK_LOG');--> statement-breakpoint
+CREATE TYPE "public"."activity_kind" AS ENUM('PENGAJUAN_BARU', 'VERIFIKASI_BERKAS', 'PENOLAKAN', 'PERSETUJUAN', 'TANDA_TANGAN', 'CETAK_SURAT', 'MUTASI_PENDUDUK', 'PENGUMUMAN', 'MASUK_LOG', 'KELUAR_LOG', 'AKTIVASI_TTD', 'KEAMANAN_AKUN');--> statement-breakpoint
 CREATE TYPE "public"."announcement_channel" AS ENUM('WEBSITE_DESA', 'PAPAN_INFORMASI', 'PENGUMUMAN_WA');--> statement-breakpoint
 CREATE TYPE "public"."announcement_status" AS ENUM('DRAF', 'TERJADWAL', 'TERBIT', 'DIARSIPKAN');--> statement-breakpoint
 CREATE TYPE "public"."attachment_status" AS ENUM('LENGKAP', 'BURAM', 'TIDAK_ADA', 'TIDAK_RELEVAN');--> statement-breakpoint
@@ -8,6 +8,7 @@ CREATE TYPE "public"."priority" AS ENUM('NORMAL', 'PRIORITAS', 'DARURAT');--> st
 CREATE TYPE "public"."religion" AS ENUM('ISLAM', 'KRISTEN', 'KATOLIK', 'HINDU', 'BUDDHA', 'KONGHUCU', 'LAINNYA');--> statement-breakpoint
 CREATE TYPE "public"."request_status" AS ENUM('PENDING_VERIFIKASI', 'BERKAS_TIDAK_LENGKAP', 'DIVERIFIKASI', 'MENUNGGU_TTD_KADES', 'DITANDATANGANI', 'SIAP_DIAMBIL', 'SELESAI', 'DITOLAK');--> statement-breakpoint
 CREATE TYPE "public"."resident_status" AS ENUM('AKTIF', 'PINDAH_KELUAR', 'MENINGGAL', 'TIDAK_DIKENAL');--> statement-breakpoint
+CREATE TYPE "public"."session_actor" AS ENUM('STAFF', 'RESIDENT');--> statement-breakpoint
 CREATE TYPE "public"."signature_status" AS ENUM('MENUNGGU', 'DITANDATANGANI', 'KEDALUWARSA', 'DIBATALKAN');--> statement-breakpoint
 CREATE TYPE "public"."staff_role" AS ENUM('OPERATOR_DESA', 'SEKDES', 'KASI_PELAYANAN', 'KAUR_TU', 'KADES', 'KADUS');--> statement-breakpoint
 CREATE TABLE "activity_log" (
@@ -197,6 +198,20 @@ CREATE TABLE "notifications" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "resident_accounts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"village_id" uuid NOT NULL,
+	"resident_id" uuid NOT NULL,
+	"nik" varchar(16) NOT NULL,
+	"password_hash" varchar(200) NOT NULL,
+	"active" boolean DEFAULT true NOT NULL,
+	"failed_attempts" integer DEFAULT 0 NOT NULL,
+	"locked_until" timestamp with time zone,
+	"last_login_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "resident_mutations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"resident_id" uuid NOT NULL,
@@ -231,6 +246,19 @@ CREATE TABLE "residents" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "sessions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"village_id" uuid NOT NULL,
+	"actor_type" "session_actor" NOT NULL,
+	"actor_id" uuid NOT NULL,
+	"user_agent" varchar(200),
+	"ip_address" varchar(64),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_seen_at" timestamp with time zone,
+	"expires_at" timestamp with time zone NOT NULL,
+	"revoked_at" timestamp with time zone
+);
+--> statement-breakpoint
 CREATE TABLE "signature_requests" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"request_id" uuid NOT NULL,
@@ -257,6 +285,11 @@ CREATE TABLE "staff" (
 	"initials" varchar(4) NOT NULL,
 	"can_sign" boolean DEFAULT false NOT NULL,
 	"signature_passphrase_hash" varchar(200),
+	"password_hash" varchar(200),
+	"login_attempts" integer DEFAULT 0 NOT NULL,
+	"login_locked_until" timestamp with time zone,
+	"sign_attempts" integer DEFAULT 0 NOT NULL,
+	"sign_locked_until" timestamp with time zone,
 	"active" boolean DEFAULT true NOT NULL,
 	"last_seen_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -316,11 +349,14 @@ ALTER TABLE "letter_types" ADD CONSTRAINT "letter_types_village_id_villages_id_f
 ALTER TABLE "neighborhoods" ADD CONSTRAINT "neighborhoods_hamlet_id_hamlets_id_fk" FOREIGN KEY ("hamlet_id") REFERENCES "public"."hamlets"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_recipient_staff_id_staff_id_fk" FOREIGN KEY ("recipient_staff_id") REFERENCES "public"."staff"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "resident_accounts" ADD CONSTRAINT "resident_accounts_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "resident_accounts" ADD CONSTRAINT "resident_accounts_resident_id_residents_id_fk" FOREIGN KEY ("resident_id") REFERENCES "public"."residents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_mutations" ADD CONSTRAINT "resident_mutations_resident_id_residents_id_fk" FOREIGN KEY ("resident_id") REFERENCES "public"."residents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_mutations" ADD CONSTRAINT "resident_mutations_recorded_by_staff_id_staff_id_fk" FOREIGN KEY ("recorded_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "residents" ADD CONSTRAINT "residents_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "residents" ADD CONSTRAINT "residents_family_id_families_id_fk" FOREIGN KEY ("family_id") REFERENCES "public"."families"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "residents" ADD CONSTRAINT "residents_neighborhood_id_neighborhoods_id_fk" FOREIGN KEY ("neighborhood_id") REFERENCES "public"."neighborhoods"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "signature_requests" ADD CONSTRAINT "signature_requests_request_id_letter_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."letter_requests"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "signature_requests" ADD CONSTRAINT "signature_requests_requested_by_staff_id_staff_id_fk" FOREIGN KEY ("requested_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "signature_requests" ADD CONSTRAINT "signature_requests_signer_staff_id_staff_id_fk" FOREIGN KEY ("signer_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -346,11 +382,16 @@ CREATE UNIQUE INDEX "letter_requirements_uq" ON "letter_requirements" USING btre
 CREATE UNIQUE INDEX "letter_types_village_code_uq" ON "letter_types" USING btree ("village_id","code");--> statement-breakpoint
 CREATE UNIQUE INDEX "neighborhoods_hamlet_rt_rw_uq" ON "neighborhoods" USING btree ("hamlet_id","rt","rw");--> statement-breakpoint
 CREATE INDEX "notifications_recipient_idx" ON "notifications" USING btree ("recipient_staff_id","read_at","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "resident_accounts_resident_uq" ON "resident_accounts" USING btree ("resident_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "resident_accounts_nik_uq" ON "resident_accounts" USING btree ("nik");--> statement-breakpoint
+CREATE INDEX "resident_accounts_village_idx" ON "resident_accounts" USING btree ("village_id");--> statement-breakpoint
 CREATE INDEX "resident_mutations_resident_idx" ON "resident_mutations" USING btree ("resident_id","effective_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "residents_nik_uq" ON "residents" USING btree ("nik");--> statement-breakpoint
 CREATE INDEX "residents_name_idx" ON "residents" USING btree ("full_name");--> statement-breakpoint
 CREATE INDEX "residents_village_status_idx" ON "residents" USING btree ("village_id","status");--> statement-breakpoint
 CREATE INDEX "residents_neighborhood_idx" ON "residents" USING btree ("neighborhood_id");--> statement-breakpoint
+CREATE INDEX "sessions_actor_idx" ON "sessions" USING btree ("actor_type","actor_id");--> statement-breakpoint
+CREATE INDEX "sessions_expires_idx" ON "sessions" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "signature_requests_status_idx" ON "signature_requests" USING btree ("status","requested_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "staff_email_uq" ON "staff" USING btree ("email");--> statement-breakpoint
 CREATE INDEX "staff_village_role_idx" ON "staff" USING btree ("village_id","role");--> statement-breakpoint

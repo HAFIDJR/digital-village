@@ -3,7 +3,8 @@ import { ZodError } from "zod";
 
 import { DomainError, recordPrintRun } from "@/db/commands";
 import { ensureDatabaseReady } from "@/db/bootstrap";
-import { getActiveOfficer, getRequestDetail, getVillageProfile } from "@/db/queries";
+import { getRequestDetail, getVillageProfile } from "@/db/queries";
+import { requireStaffOfficer } from "@/lib/auth/guard";
 import { renderLetterPdf } from "@/lib/pdf/letter";
 import { printRequestSchema, toFieldErrors } from "@/lib/validators";
 
@@ -28,10 +29,7 @@ export async function GET(request: Request, ctx: RouteContext<"/api/requests/[id
     const village = await getVillageProfile();
     if (!village) throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
 
-    const officer = await getActiveOfficer(village.id);
-    if (!officer) {
-      throw new DomainError("Tidak ada petugas aktif pada shift ini.", "NO_ACTIVE_STAFF", 409);
-    }
+    const { officer } = await requireStaffOfficer();
 
     const detail = await getRequestDetail(village.id, id);
     if (!detail) throw new DomainError("Pengajuan tidak ditemukan.", "REQUEST_NOT_FOUND", 404);

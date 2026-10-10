@@ -3,6 +3,7 @@ import { getVillageProfile, listArchivedLetters } from "@/db/queries";
 import { parseQueueQuery } from "@/lib/validators";
 
 import { withApi } from "../_lib/respond";
+import { requireStaffSession } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
 
   return withApi(async () => {
+     await requireStaffSession();
     const query = parseQueueQuery(params);
 
     const village = await getVillageProfile();

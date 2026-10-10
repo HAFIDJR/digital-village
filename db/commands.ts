@@ -1,28 +1,24 @@
-/**
- * Write layer.
- *
- * Every state transition runs inside a transaction and appends to
- * `activity_log` before it commits. That combination is what makes the
- * "Aktivitas Pelayanan Terkini" panel a genuine audit trail rather than a
- * presentation-only feed: if the log insert fails, the state change rolls back.
- */
 import "server-only";
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { getDb } from "./client";
 import * as t from "./schema";
 import type { AnnouncementDraft, VerifyRequestInput } from "@/lib/validators";
 import { REQUEST_STATUS } from "@/lib/domain";
-import { verifyPassphrase } from "@/lib/esign-server";
+import { verifyPassword } from "@/lib/auth/password";
+import { hashPassword } from "@/lib/auth/password";
+import {
+  LOCKOUT_MS,
+  MAX_SIGN_ATTEMPTS,
+  lockoutMinutesLeft,
+} from "@/lib/auth/policy";
 import type { RequestStatus } from "./schema";
 
-/* -------------------------------------------------------------------------- */
-/* Helpers                                                                     */
-/* -------------------------------------------------------------------------- */
 
 type Db = Awaited<ReturnType<typeof getDb>>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTx = Db | Tx;
 
 export class DomainError extends Error {
   constructor(
@@ -61,7 +57,9 @@ type AuditEntry = {
   meta?: Record<string, unknown>;
 };
 
-async function writeAudit(tx: Tx, villageId: string, entry: AuditEntry) {
+type AuditWriter = { insert: Db["insert"] };
+
+async function writeAudit(tx: AuditWriter, villageId: string, entry: AuditEntry) {
   await tx.insert(t.activityLog).values({
     villageId,
     kind: entry.kind,
@@ -77,14 +75,71 @@ async function writeAudit(tx: Tx, villageId: string, entry: AuditEntry) {
   });
 }
 
-async function loadStaff(tx: Tx, staffId: string) {
+export async function appendAudit(villageId: string, entry: AuditEntry) {
+  const db = await getDb();
+  await writeAudit(db, villageId, entry);
+}
+
+export async function openStaffShift(input: {
+  staffId: string;
+  station: string;
+  ipAddress?: string | null;
+}) {
+  const db = await getDb();
+  const [open] = await db
+    .select({ id: t.staffShifts.id })
+    .from(t.staffShifts)
+    .where(and(eq(t.staffShifts.staffId, input.staffId), isNull(t.staffShifts.endedAt)))
+    .limit(1);
+  if (open) return { reopened: false as const, shiftId: open.id };
+
+  const [shift] = await db
+    .insert(t.staffShifts)
+    .values({
+      staffId: input.staffId,
+      station: input.station,
+      ipAddress: input.ipAddress ?? null,
+    })
+    .returning({ id: t.staffShifts.id });
+  return { reopened: true as const, shiftId: shift.id };
+}
+
+export async function closeOpenStaffShifts(staffId: string) {
+  const db = await getDb();
+  await db
+    .update(t.staffShifts)
+    .set({ endedAt: new Date() })
+    .where(and(eq(t.staffShifts.staffId, staffId), isNull(t.staffShifts.endedAt)));
+}
+
+async function resetSignAttempts(db: Db, staffId: string) {
+  await db
+    .update(t.staff)
+    .set({ signAttempts: 0, signLockedUntil: null })
+    .where(eq(t.staff.id, staffId));
+}
+
+async function registerFailedSignAttempt(db: Db, staff: t.Staff) {
+  const attempts = (staff.signAttempts ?? 0) + 1;
+  const locked = attempts >= MAX_SIGN_ATTEMPTS;
+  await db
+    .update(t.staff)
+    .set({
+      signAttempts: attempts,
+      ...(locked ? { signLockedUntil: new Date(Date.now() + LOCKOUT_MS) } : {}),
+    })
+    .where(eq(t.staff.id, staff.id));
+  return { attempts, locked };
+}
+
+async function loadStaff(tx: DbOrTx, staffId: string) {
   const [row] = await tx.select().from(t.staff).where(eq(t.staff.id, staffId)).limit(1);
   if (!row) throw new DomainError("Petugas tidak ditemukan", "STAFF_NOT_FOUND", 404);
   if (!row.active) throw new DomainError("Akun petugas tidak aktif", "STAFF_INACTIVE", 403);
   return row;
 }
 
-async function loadRequest(tx: Tx, villageId: string, requestId: string) {
+async function loadRequest(tx: DbOrTx, villageId: string, requestId: string) {
   const [row] = await tx
     .select()
     .from(t.letterRequests)
@@ -94,17 +149,9 @@ async function loadRequest(tx: Tx, villageId: string, requestId: string) {
   return row;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Verification — Setujui / Minta Perbaikan / Tolak                            */
-/* -------------------------------------------------------------------------- */
-
-/** Legal next states, so an invalid transition is rejected before SQL runs. */
 const ALLOWED_TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   PENDING_VERIFIKASI: ["DIVERIFIKASI", "BERKAS_TIDAK_LENGKAP", "DITOLAK"],
   BERKAS_TIDAK_LENGKAP: ["PENDING_VERIFIKASI", "DIVERIFIKASI", "DITOLAK"],
-  // SIAP_DIAMBIL is the exit for letter types that need no Kepala Desa
-  // signature; every type seeded in this village currently does, so it is a
-  // documented branch rather than a travelled one.
   DIVERIFIKASI: ["MENUNGGU_TTD_KADES", "SIAP_DIAMBIL", "BERKAS_TIDAK_LENGKAP", "DITOLAK"],
   MENUNGGU_TTD_KADES: ["DITANDATANGANI", "DIVERIFIKASI", "DITOLAK"],
   DITANDATANGANI: ["SIAP_DIAMBIL", "SELESAI"],
@@ -117,16 +164,7 @@ export function canTransition(from: RequestStatus, to: RequestStatus) {
   return ALLOWED_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-/**
- * Resolves where "Setujui" lands from the current status.
- *
- * Verification is a two-desk workflow: the operator attests that the file is
- * complete (PENDING_VERIFIKASI → DIVERIFIKASI), and forwarding it to the Kepala
- * Desa is a separate step (DIVERIFIKASI → MENUNGGU_TTD_KADES). Officers work
- * from one button, so the command maps that intent onto the legal next step
- * instead of making them memorise the state machine — clicking Setujui twice
- * walks the request through both desks.
- */
+
 function approvalTarget(from: RequestStatus, requiresSignature: boolean): RequestStatus {
   if (from === "DIVERIFIKASI") return requiresSignature ? "MENUNGGU_TTD_KADES" : "SIAP_DIAMBIL";
   return "DIVERIFIKASI";
@@ -332,34 +370,63 @@ export async function signLetterRequest(input: {
 }) {
   const db = await getDb();
 
+  const staff = await loadStaff(db, input.staffId);
+  if (!staff.canSign) {
+    throw new DomainError(
+      "Hanya Kepala Desa yang berwenang menandatangani surat.",
+      "NOT_AUTHORISED_SIGNER",
+      403,
+    );
+  }
+
+  if (staff.signLockedUntil && staff.signLockedUntil.getTime() > Date.now()) {
+    throw new DomainError(
+      `Sertifikat tanda tangan terkunci sementara karena terlalu banyak percobaan gagal. Coba lagi dalam ${lockoutMinutesLeft(staff.signLockedUntil)} menit.`,
+      "SIGN_LOCKED",
+      429,
+    );
+  }
+  if (!staff.signaturePassphraseHash) {
+    throw new DomainError(
+      "Sertifikat tanda tangan elektronik Anda belum diaktivasi. Aktivasikan melalui menu \"Profil & Hak Akses\".",
+      "SIGNATURE_NOT_ACTIVATED",
+      409,
+    );
+  }
+  if (!verifyPassword(input.passphrase, staff.signaturePassphraseHash)) {
+    const state = await registerFailedSignAttempt(db, staff);
+    await appendAudit(input.villageId, {
+      kind: "KEAMANAN_AKUN",
+      summary: state.locked
+        ? `Sertifikat tanda tangan ${staff.fullName} terkunci setelah ${state.attempts} percobaan frasa sandi gagal.`
+        : `Percobaan frasa sandi tanda tangan gagal untuk ${staff.fullName} (${state.attempts}/${MAX_SIGN_ATTEMPTS}).`,
+      subjectType: "staff",
+      subjectId: staff.id,
+      actor: {
+        id: staff.id,
+        name: staff.fullName,
+        initials: staff.initials,
+        role: staff.jobTitle,
+      },
+      // Attempts and outcome only — never the passphrase that was tried.
+      meta: { attempts: state.attempts, locked: state.locked },
+    });
+    if (state.locked) {
+      throw new DomainError(
+        "Frasa sandi tidak sesuai dan sertifikat kini terkunci sementara. Hubungi administrator desa bila ini keliruan.",
+        "SIGN_LOCKED",
+        429,
+      );
+    }
+    throw new DomainError(
+      "Frasa sandi sertifikat tidak sesuai. Periksa kembali frasa sandi BSrE Anda.",
+      "INVALID_PASSPHRASE",
+      401,
+    );
+  }
+  await resetSignAttempts(db, staff.id);
+
   return db.transaction(async (tx) => {
-    const staff = await loadStaff(tx, input.staffId);
-    if (!staff.canSign) {
-      throw new DomainError(
-        "Hanya Kepala Desa yang berwenang menandatangani surat.",
-        "NOT_AUTHORISED_SIGNER",
-        403,
-      );
-    }
-
-    // The ceremony is the last gate before a document becomes legally valid, so
-    // the passphrase is actually verified — an unactivated credential fails
-    // closed instead of signing with whatever was typed.
-    if (!staff.signaturePassphraseHash) {
-      throw new DomainError(
-        "Sertifikat tanda tangan elektronik pejabat ini belum diaktivasi. Hubungi administrator desa.",
-        "SIGNATURE_NOT_ACTIVATED",
-        409,
-      );
-    }
-    if (!verifyPassphrase(input.passphrase, staff.signaturePassphraseHash)) {
-      throw new DomainError(
-        "Frasa sandi sertifikat tidak sesuai. Periksa kembali frasa sandi BSrE Anda.",
-        "INVALID_PASSPHRASE",
-        401,
-      );
-    }
-
     const request = await loadRequest(tx, input.villageId, input.requestId);
     if (request.status !== "MENUNGGU_TTD_KADES") {
       throw new DomainError(
@@ -408,14 +475,73 @@ export async function signLetterRequest(input: {
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* Letter press                                                                 */
-/* -------------------------------------------------------------------------- */
+export async function activateSignaturePassphrase(input: {
+  villageId: string;
+  staffId: string;
+  currentPassphrase?: string;
+  newPassphrase: string;
+}) {
+  const db = await getDb();
+  const staff = await loadStaff(db, input.staffId);
+  if (!staff.canSign) {
+    throw new DomainError(
+      "Hanya pejabat penanda tangan yang dapat mengaktivasi sertifikat tanda tangan.",
+      "NOT_AUTHORISED_SIGNER",
+      403,
+    );
+  }
 
-/**
- * Records a print run. Called by the PDF route so a download and its audit
- * entry can never diverge.
- */
+  const rotating = Boolean(staff.signaturePassphraseHash);
+  if (rotating) {
+    if (staff.signLockedUntil && staff.signLockedUntil.getTime() > Date.now()) {
+      throw new DomainError(
+        `Aktivasi sertifikat terkunci sementara. Coba lagi dalam ${lockoutMinutesLeft(staff.signLockedUntil)} menit.`,
+        "SIGN_LOCKED",
+        429,
+      );
+    }
+    if (!input.currentPassphrase || !verifyPassword(input.currentPassphrase, staff.signaturePassphraseHash)) {
+      const state = await registerFailedSignAttempt(db, staff);
+      await appendAudit(input.villageId, {
+        kind: "KEAMANAN_AKUN",
+        summary: `Percobaan penggantian frasa sandi tanda tangan gagal untuk ${staff.fullName} (${state.attempts}/${MAX_SIGN_ATTEMPTS}).`,
+        subjectType: "staff",
+        subjectId: staff.id,
+        actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+        meta: { scope: "activation", attempts: state.attempts, locked: state.locked },
+      });
+      throw new DomainError(
+        "Frasa sandi saat ini tidak sesuai.",
+        "INVALID_PASSPHRASE",
+        401,
+      );
+    }
+  }
+
+  await db
+    .update(t.staff)
+    .set({
+      signaturePassphraseHash: hashPassword(input.newPassphrase),
+      signAttempts: 0,
+      signLockedUntil: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(t.staff.id, staff.id));
+
+  await appendAudit(input.villageId, {
+    kind: "AKTIVASI_TTD",
+    summary: rotating
+      ? `${staff.fullName} mengganti frasa sandi sertifikat tanda tangan elektroniknya.`
+      : `${staff.fullName} mengaktivasi sertifikat tanda tangan elektroniknya.`,
+    subjectType: "staff",
+    subjectId: staff.id,
+    actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+    meta: { rotated: rotating },
+  });
+
+  return { activated: true as const, rotated: rotating as boolean };
+}
+
 export async function recordPrintRun(input: {
   villageId: string;
   requestId: string;
@@ -438,7 +564,6 @@ export async function recordPrintRun(input: {
     const now = new Date();
     const status = request.status as RequestStatus;
 
-    // A final print is the moment the document leaves the village's custody.
     let nextStatus: RequestStatus = status;
     let completedAt = request.completedAt;
 
@@ -519,6 +644,36 @@ export async function markRequestCollected(input: {
     });
 
     return { completedAt: now };
+  });
+}
+
+export async function recordResidentDownload(input: {
+  villageId: string;
+  requestId: string;
+  ticket: string;
+  verificationCode: string;
+  residentId: string;
+  residentName: string;
+}) {
+  const initials = input.residentName
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word.charAt(0).toUpperCase())
+    .join("");
+
+  await appendAudit(input.villageId, {
+    kind: "CETAK_SURAT",
+    summary: `Salinan final ${input.ticket} diunduh oleh pemohon ${input.residentName} melalui portal warga.`,
+    subjectType: "letter_request",
+    subjectId: input.requestId,
+    subjectRef: input.ticket,
+    actor: {
+      id: null,
+      name: input.residentName,
+      initials: initials || "W",
+      role: "Warga (Portal)",
+    },
+    meta: { channel: "PORTAL_WARGA", qr: input.verificationCode },
   });
 }
 

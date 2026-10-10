@@ -17,7 +17,6 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
-
 export const genderEnum = pgEnum("gender", ["L", "P"]);
 
 export const religionEnum = pgEnum("religion", [
@@ -73,7 +72,11 @@ export const staffRoleEnum = pgEnum("staff_role", [
   "KADUS",
 ]);
 
-export const priorityEnum = pgEnum("priority", ["NORMAL", "PRIORITAS", "DARURAT"]);
+export const priorityEnum = pgEnum("priority", [
+  "NORMAL",
+  "PRIORITAS",
+  "DARURAT",
+]);
 
 export const announcementChannelEnum = pgEnum("announcement_channel", [
   "WEBSITE_DESA",
@@ -98,7 +101,12 @@ export const activityKindEnum = pgEnum("activity_kind", [
   "MUTASI_PENDUDUK",
   "PENGUMUMAN",
   "MASUK_LOG",
+  "KELUAR_LOG",
+  "AKTIVASI_TTD",
+  "KEAMANAN_AKUN",
 ]);
+
+export const sessionActorEnum = pgEnum("session_actor", ["STAFF", "RESIDENT"]);
 
 export const signatureStatusEnum = pgEnum("signature_status", [
   "MENUNGGU",
@@ -129,8 +137,12 @@ export const villages = pgTable("villages", {
   /** Public URL of the village seal (lambang desa). */
   sealUrl: text("seal_url"),
   establishedYear: smallint("established_year"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 /* ==========================================================================
@@ -148,7 +160,9 @@ export const hamlets = pgTable(
     name: varchar("name", { length: 80 }).notNull(),
     code: varchar("code", { length: 16 }).notNull(),
     headName: varchar("head_name", { length: 120 }), // Kepala Dusun
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [uniqueIndex("hamlets_village_code_uq").on(t.villageId, t.code)],
 );
@@ -165,9 +179,13 @@ export const neighborhoods = pgTable(
     /** RW number, e.g. 2 */
     rw: smallint("rw").notNull(),
     headName: varchar("head_name", { length: 120 }), // Ketua RT
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
-  (t) => [uniqueIndex("neighborhoods_hamlet_rt_rw_uq").on(t.hamletId, t.rt, t.rw)],
+  (t) => [
+    uniqueIndex("neighborhoods_hamlet_rt_rw_uq").on(t.hamletId, t.rt, t.rw),
+  ],
 );
 
 /* ==========================================================================
@@ -190,15 +208,80 @@ export const staff = pgTable(
     avatarUrl: text("avatar_url"),
     initials: varchar("initials", { length: 4 }).notNull(),
     canSign: boolean("can_sign").notNull().default(false),
-    signaturePassphraseHash: varchar("signature_passphrase_hash", { length: 200 }),
+    signaturePassphraseHash: varchar("signature_passphrase_hash", {
+      length: 200,
+    }),
+    passwordHash: varchar("password_hash", { length: 200 }),
+    loginAttempts: integer("login_attempts").notNull().default(0),
+    loginLockedUntil: timestamp("login_locked_until", { withTimezone: true }),
+    signAttempts: integer("sign_attempts").notNull().default(0),
+    signLockedUntil: timestamp("sign_locked_until", { withTimezone: true }),
     active: boolean("active").notNull().default(true),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("staff_email_uq").on(t.email),
     index("staff_village_role_idx").on(t.villageId, t.role),
+  ],
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    actorType: sessionActorEnum("actor_type").notNull(),
+    actorId: uuid("actor_id").notNull(),
+    userAgent: varchar("user_agent", { length: 200 }),
+    ipAddress: varchar("ip_address", { length: 64 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("sessions_actor_idx").on(t.actorType, t.actorId),
+    index("sessions_expires_idx").on(t.expiresAt),
+  ],
+);
+
+export const residentAccounts = pgTable(
+  "resident_accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    residentId: uuid("resident_id")
+      .notNull()
+      .references(() => residents.id, { onDelete: "cascade" }),
+    nik: varchar("nik", { length: 16 }).notNull(),
+    passwordHash: varchar("password_hash", { length: 200 }).notNull(),
+    active: boolean("active").notNull().default(true),
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("resident_accounts_resident_uq").on(t.residentId),
+    uniqueIndex("resident_accounts_nik_uq").on(t.nik),
+    index("resident_accounts_village_idx").on(t.villageId),
   ],
 );
 
@@ -210,7 +293,9 @@ export const staffShifts = pgTable(
     staffId: uuid("staff_id")
       .notNull()
       .references(() => staff.id, { onDelete: "cascade" }),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
     /** Pelayanan loket / verifikasi berkas / tanda tangan digital */
     station: varchar("station", { length: 80 }).notNull(),
@@ -240,8 +325,12 @@ export const families = pgTable(
     /** Ekonomi stratum recorded by the village for social assistance mapping. */
     welfareClass: varchar("welfare_class", { length: 32 }),
     memberCount: smallint("member_count").notNull().default(0),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("families_kk_uq").on(t.kkNumber),
@@ -256,7 +345,9 @@ export const residents = pgTable(
     villageId: uuid("village_id")
       .notNull()
       .references(() => villages.id, { onDelete: "cascade" }),
-    familyId: uuid("family_id").references(() => families.id, { onDelete: "set null" }),
+    familyId: uuid("family_id").references(() => families.id, {
+      onDelete: "set null",
+    }),
     /** 16-digit Nomor Induk Kependudukan. */
     nik: varchar("nik", { length: 16 }).notNull(),
     fullName: varchar("full_name", { length: 120 }).notNull(),
@@ -264,10 +355,14 @@ export const residents = pgTable(
     birthPlace: varchar("birth_place", { length: 80 }).notNull(),
     birthDate: date("birth_date").notNull(),
     religion: religionEnum("religion").notNull().default("ISLAM"),
-    maritalStatus: maritalStatusEnum("marital_status").notNull().default("BELUM_MENIKAH"),
+    maritalStatus: maritalStatusEnum("marital_status")
+      .notNull()
+      .default("BELUM_MENIKAH"),
     education: varchar("education", { length: 48 }),
     occupation: varchar("occupation", { length: 80 }),
-    nationality: varchar("nationality", { length: 48 }).notNull().default("WNI"),
+    nationality: varchar("nationality", { length: 48 })
+      .notNull()
+      .default("WNI"),
     /** Family relationship: "KEPALA KELUARGA", "ISTRI", "ANAK", ... */
     familyRelation: varchar("family_relation", { length: 48 }),
     neighborhoodId: uuid("neighborhood_id")
@@ -278,8 +373,12 @@ export const residents = pgTable(
     status: residentStatusEnum("status").notNull().default("AKTIF"),
     /** Blurred / damaged KTP uploads are flagged here after verification. */
     documentsVerified: boolean("documents_verified").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("residents_nik_uq").on(t.nik),
@@ -306,9 +405,13 @@ export const residentMutations = pgTable(
     recordedByStaffId: uuid("recorded_by_staff_id").references(() => staff.id, {
       onDelete: "set null",
     }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
-  (t) => [index("resident_mutations_resident_idx").on(t.residentId, t.effectiveDate)],
+  (t) => [
+    index("resident_mutations_resident_idx").on(t.residentId, t.effectiveDate),
+  ],
 );
 
 /* ==========================================================================
@@ -330,12 +433,16 @@ export const letterTypes = pgTable(
     description: text("description"),
     /** SLA in working days — drives the "jatuh tempo" countdown in the table. */
     slaDays: smallint("sla_days").notNull().default(2),
-    requiresKadesSignature: boolean("requires_kades_signature").notNull().default(true),
+    requiresKadesSignature: boolean("requires_kades_signature")
+      .notNull()
+      .default(true),
     /** Retribusi / biaya administrasi in IDR. 0 = gratis. */
     feeIdr: integer("fee_idr").notNull().default(0),
     active: boolean("active").notNull().default(true),
     sortOrder: smallint("sort_order").notNull().default(0),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [uniqueIndex("letter_types_village_code_uq").on(t.villageId, t.code)],
 );
@@ -357,7 +464,6 @@ export const letterRequirements = pgTable(
   (t) => [uniqueIndex("letter_requirements_uq").on(t.letterTypeId, t.docKey)],
 );
 
-
 export const letterRequests = pgTable(
   "letter_requests",
   {
@@ -370,21 +476,29 @@ export const letterRequests = pgTable(
     letterTypeId: uuid("letter_type_id")
       .notNull()
       .references(() => letterTypes.id, { onDelete: "restrict" }),
-    applicantResidentId: uuid("applicant_resident_id").references(() => residents.id, {
-      onDelete: "set null",
-    }),
+    applicantResidentId: uuid("applicant_resident_id").references(
+      () => residents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     /** Denormalised so the queue still renders if the registry is being resynced. */
     applicantName: varchar("applicant_name", { length: 120 }).notNull(),
     applicantNik: varchar("applicant_nik", { length: 16 }).notNull(),
     applicantPhone: varchar("applicant_phone", { length: 32 }),
-    familyId: uuid("family_id").references(() => families.id, { onDelete: "set null" }),
+    familyId: uuid("family_id").references(() => families.id, {
+      onDelete: "set null",
+    }),
     neighborhoodId: uuid("neighborhood_id")
       .notNull()
       .references(() => neighborhoods.id, { onDelete: "restrict" }),
     address: text("address").notNull(),
     /** Free-form answers to the letter template's variables. */
     purpose: text("purpose").notNull(),
-    payload: jsonb("payload").$type<Record<string, string | number | null>>().notNull().default({}),
+    payload: jsonb("payload")
+      .$type<Record<string, string | number | null>>()
+      .notNull()
+      .default({}),
     status: requestStatusEnum("status").notNull().default("PENDING_VERIFIKASI"),
     priority: priorityEnum("priority").notNull().default("NORMAL"),
     /** Application channel: LOKET | WHATSAPP | WEBSITE */
@@ -398,7 +512,9 @@ export const letterRequests = pgTable(
       onDelete: "set null",
     }),
     rejectionReason: text("rejection_reason"),
-    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     /** SLA deadline; comparisons use this rather than recomputing on each render. */
     dueAt: timestamp("due_at", { withTimezone: true }),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
@@ -408,8 +524,12 @@ export const letterRequests = pgTable(
     verificationCode: varchar("verification_code", { length: 32 }).notNull(),
     /** Monotonic agenda number assigned by the village registry book. */
     agendaNumber: integer("agenda_number"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("letter_requests_ticket_uq").on(t.ticket),
@@ -438,7 +558,9 @@ export const letterAttachments = pgTable(
     status: attachmentStatusEnum("status").notNull().default("LENGKAP"),
     /** Verification defect, e.g. "KTP Buram — mohon unggah ulang". */
     defectNote: varchar("defect_note", { length: 160 }),
-    uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     verifiedByStaffId: uuid("verified_by_staff_id").references(() => staff.id, {
       onDelete: "set null",
     }),
@@ -454,14 +576,21 @@ export const signatureRequests = pgTable(
     requestId: uuid("request_id")
       .notNull()
       .references(() => letterRequests.id, { onDelete: "cascade" }),
-    requestedByStaffId: uuid("requested_by_staff_id").references(() => staff.id, {
+    requestedByStaffId: uuid("requested_by_staff_id").references(
+      () => staff.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    signerStaffId: uuid("signer_staff_id").references(() => staff.id, {
       onDelete: "set null",
     }),
-    signerStaffId: uuid("signer_staff_id").references(() => staff.id, { onDelete: "set null" }),
     status: signatureStatusEnum("status").notNull().default("MENUNGGU"),
     /** Passphrase-verified certificate serial issued by BSrE. */
     certificateSerial: varchar("certificate_serial", { length: 64 }),
-    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     signedAt: timestamp("signed_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     note: text("note"),
@@ -497,13 +626,21 @@ export const citizenReports = pgTable(
       onDelete: "set null",
     }),
     responseCount: smallint("response_count").notNull().default(0),
-    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("citizen_reports_ticket_uq").on(t.ticket),
-    index("citizen_reports_status_idx").on(t.villageId, t.status, t.submittedAt),
+    index("citizen_reports_status_idx").on(
+      t.villageId,
+      t.status,
+      t.submittedAt,
+    ),
   ],
 );
 
@@ -522,19 +659,29 @@ export const announcements = pgTable(
     slug: varchar("slug", { length: 220 }).notNull(),
     excerpt: varchar("excerpt", { length: 320 }),
     body: text("body").notNull(),
-    channel: announcementChannelEnum("channel").notNull().default("WEBSITE_DESA"),
+    channel: announcementChannelEnum("channel")
+      .notNull()
+      .default("WEBSITE_DESA"),
     status: announcementStatusEnum("status").notNull().default("DRAF"),
     priority: priorityEnum("priority").notNull().default("NORMAL"),
     pinned: boolean("pinned").notNull().default(false),
     /** Attachment allowance for surat edaran PDFs. */
     attachmentCount: smallint("attachment_count").notNull().default(0),
-    audience: varchar("audience", { length: 80 }).notNull().default("Seluruh Warga"),
-    authorStaffId: uuid("author_staff_id").references(() => staff.id, { onDelete: "set null" }),
+    audience: varchar("audience", { length: 80 })
+      .notNull()
+      .default("Seluruh Warga"),
+    authorStaffId: uuid("author_staff_id").references(() => staff.id, {
+      onDelete: "set null",
+    }),
     publishAt: timestamp("publish_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     viewCount: integer("view_count").notNull().default(0),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     uniqueIndex("announcements_slug_uq").on(t.villageId, t.slug),
@@ -560,13 +707,17 @@ export const activityLog = pgTable(
     subjectType: varchar("subject_type", { length: 40 }),
     subjectId: uuid("subject_id"),
     subjectRef: varchar("subject_ref", { length: 40 }), // "SRT-1049"
-    actorStaffId: uuid("actor_staff_id").references(() => staff.id, { onDelete: "set null" }),
+    actorStaffId: uuid("actor_staff_id").references(() => staff.id, {
+      onDelete: "set null",
+    }),
     actorName: varchar("actor_name", { length: 120 }).notNull(),
     actorInitials: varchar("actor_initials", { length: 4 }).notNull(),
     actorRole: varchar("actor_role", { length: 60 }).notNull(),
     /** Extra structured detail — amounts, NIK deltas, QR payloads, etc. */
     meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
-    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     index("activity_log_village_occurred_idx").on(t.villageId, t.occurredAt),
@@ -590,9 +741,17 @@ export const notifications = pgTable(
     severity: varchar("severity", { length: 16 }).notNull().default("INFO"), // INFO | WARNING | CRITICAL | SUCCESS
     href: text("href"),
     readAt: timestamp("read_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
-  (t) => [index("notifications_recipient_idx").on(t.recipientStaffId, t.readAt, t.createdAt)],
+  (t) => [
+    index("notifications_recipient_idx").on(
+      t.recipientStaffId,
+      t.readAt,
+      t.createdAt,
+    ),
+  ],
 );
 
 /** Rolling daily operational metrics — avoids full-table scans on the KPI row. */
@@ -611,10 +770,15 @@ export const dailyStats = pgTable(
     activeFamilies: integer("active_families").notNull().default(0),
     reportsNew: integer("reports_new").notNull().default(0),
     /** Published village budget realisation, in IDR. */
-    danaDesaDisbursed: numeric("dana_desa_disbursed", { precision: 16, scale: 2 })
+    danaDesaDisbursed: numeric("dana_desa_disbursed", {
+      precision: 16,
+      scale: 2,
+    })
       .notNull()
       .default("0"),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.villageId, t.statDate] })],
 );
@@ -630,18 +794,30 @@ export const villagesRelations = relations(villages, ({ many }) => ({
 }));
 
 export const hamletsRelations = relations(hamlets, ({ one, many }) => ({
-  village: one(villages, { fields: [hamlets.villageId], references: [villages.id] }),
+  village: one(villages, {
+    fields: [hamlets.villageId],
+    references: [villages.id],
+  }),
   neighborhoods: many(neighborhoods),
 }));
 
-export const neighborhoodsRelations = relations(neighborhoods, ({ one, many }) => ({
-  hamlet: one(hamlets, { fields: [neighborhoods.hamletId], references: [hamlets.id] }),
-  residents: many(residents),
-  requests: many(letterRequests),
-}));
+export const neighborhoodsRelations = relations(
+  neighborhoods,
+  ({ one, many }) => ({
+    hamlet: one(hamlets, {
+      fields: [neighborhoods.hamletId],
+      references: [hamlets.id],
+    }),
+    residents: many(residents),
+    requests: many(letterRequests),
+  }),
+);
 
 export const staffRelations = relations(staff, ({ one, many }) => ({
-  village: one(villages, { fields: [staff.villageId], references: [villages.id] }),
+  village: one(villages, {
+    fields: [staff.villageId],
+    references: [villages.id],
+  }),
   shifts: many(staffShifts),
   assignedRequests: many(letterRequests),
 }));
@@ -651,7 +827,10 @@ export const staffShiftsRelations = relations(staffShifts, ({ one }) => ({
 }));
 
 export const familiesRelations = relations(families, ({ one, many }) => ({
-  village: one(villages, { fields: [families.villageId], references: [villages.id] }),
+  village: one(villages, {
+    fields: [families.villageId],
+    references: [villages.id],
+  }),
   neighborhood: one(neighborhoods, {
     fields: [families.neighborhoodId],
     references: [neighborhoods.id],
@@ -660,8 +839,14 @@ export const familiesRelations = relations(families, ({ one, many }) => ({
 }));
 
 export const residentsRelations = relations(residents, ({ one, many }) => ({
-  village: one(villages, { fields: [residents.villageId], references: [villages.id] }),
-  family: one(families, { fields: [residents.familyId], references: [families.id] }),
+  village: one(villages, {
+    fields: [residents.villageId],
+    references: [villages.id],
+  }),
+  family: one(families, {
+    fields: [residents.familyId],
+    references: [families.id],
+  }),
   neighborhood: one(neighborhoods, {
     fields: [residents.neighborhoodId],
     references: [neighborhoods.id],
@@ -670,88 +855,130 @@ export const residentsRelations = relations(residents, ({ one, many }) => ({
   requests: many(letterRequests),
 }));
 
-export const residentMutationsRelations = relations(residentMutations, ({ one }) => ({
-  resident: one(residents, {
-    fields: [residentMutations.residentId],
-    references: [residents.id],
+export const residentMutationsRelations = relations(
+  residentMutations,
+  ({ one }) => ({
+    resident: one(residents, {
+      fields: [residentMutations.residentId],
+      references: [residents.id],
+    }),
+    recordedBy: one(staff, {
+      fields: [residentMutations.recordedByStaffId],
+      references: [staff.id],
+    }),
   }),
-  recordedBy: one(staff, {
-    fields: [residentMutations.recordedByStaffId],
-    references: [staff.id],
-  }),
-}));
+);
 
 export const letterTypesRelations = relations(letterTypes, ({ one, many }) => ({
-  village: one(villages, { fields: [letterTypes.villageId], references: [villages.id] }),
+  village: one(villages, {
+    fields: [letterTypes.villageId],
+    references: [villages.id],
+  }),
   requirements: many(letterRequirements),
   requests: many(letterRequests),
 }));
 
-export const letterRequirementsRelations = relations(letterRequirements, ({ one }) => ({
-  letterType: one(letterTypes, {
-    fields: [letterRequirements.letterTypeId],
-    references: [letterTypes.id],
+export const letterRequirementsRelations = relations(
+  letterRequirements,
+  ({ one }) => ({
+    letterType: one(letterTypes, {
+      fields: [letterRequirements.letterTypeId],
+      references: [letterTypes.id],
+    }),
   }),
-}));
+);
 
-export const letterRequestsRelations = relations(letterRequests, ({ one, many }) => ({
-  village: one(villages, { fields: [letterRequests.villageId], references: [villages.id] }),
-  letterType: one(letterTypes, {
-    fields: [letterRequests.letterTypeId],
-    references: [letterTypes.id],
+export const letterRequestsRelations = relations(
+  letterRequests,
+  ({ one, many }) => ({
+    village: one(villages, {
+      fields: [letterRequests.villageId],
+      references: [villages.id],
+    }),
+    letterType: one(letterTypes, {
+      fields: [letterRequests.letterTypeId],
+      references: [letterTypes.id],
+    }),
+    applicant: one(residents, {
+      fields: [letterRequests.applicantResidentId],
+      references: [residents.id],
+    }),
+    family: one(families, {
+      fields: [letterRequests.familyId],
+      references: [families.id],
+    }),
+    neighborhood: one(neighborhoods, {
+      fields: [letterRequests.neighborhoodId],
+      references: [neighborhoods.id],
+    }),
+    assignedStaff: one(staff, {
+      fields: [letterRequests.assignedStaffId],
+      references: [staff.id],
+    }),
+    attachments: many(letterAttachments),
+    signatures: many(signatureRequests),
   }),
-  applicant: one(residents, {
-    fields: [letterRequests.applicantResidentId],
-    references: [residents.id],
-  }),
-  family: one(families, { fields: [letterRequests.familyId], references: [families.id] }),
-  neighborhood: one(neighborhoods, {
-    fields: [letterRequests.neighborhoodId],
-    references: [neighborhoods.id],
-  }),
-  assignedStaff: one(staff, {
-    fields: [letterRequests.assignedStaffId],
-    references: [staff.id],
-  }),
-  attachments: many(letterAttachments),
-  signatures: many(signatureRequests),
-}));
+);
 
-export const letterAttachmentsRelations = relations(letterAttachments, ({ one }) => ({
-  request: one(letterRequests, {
-    fields: [letterAttachments.requestId],
-    references: [letterRequests.id],
+export const letterAttachmentsRelations = relations(
+  letterAttachments,
+  ({ one }) => ({
+    request: one(letterRequests, {
+      fields: [letterAttachments.requestId],
+      references: [letterRequests.id],
+    }),
+    verifiedBy: one(staff, {
+      fields: [letterAttachments.verifiedByStaffId],
+      references: [staff.id],
+    }),
   }),
-  verifiedBy: one(staff, {
-    fields: [letterAttachments.verifiedByStaffId],
-    references: [staff.id],
-  }),
-}));
+);
 
-export const signatureRequestsRelations = relations(signatureRequests, ({ one }) => ({
-  request: one(letterRequests, {
-    fields: [signatureRequests.requestId],
-    references: [letterRequests.id],
+export const signatureRequestsRelations = relations(
+  signatureRequests,
+  ({ one }) => ({
+    request: one(letterRequests, {
+      fields: [signatureRequests.requestId],
+      references: [letterRequests.id],
+    }),
+    requestedBy: one(staff, {
+      fields: [signatureRequests.requestedByStaffId],
+      references: [staff.id],
+    }),
+    signer: one(staff, {
+      fields: [signatureRequests.signerStaffId],
+      references: [staff.id],
+    }),
   }),
-  requestedBy: one(staff, {
-    fields: [signatureRequests.requestedByStaffId],
-    references: [staff.id],
-  }),
-  signer: one(staff, { fields: [signatureRequests.signerStaffId], references: [staff.id] }),
-}));
+);
 
 export const announcementsRelations = relations(announcements, ({ one }) => ({
-  village: one(villages, { fields: [announcements.villageId], references: [villages.id] }),
-  author: one(staff, { fields: [announcements.authorStaffId], references: [staff.id] }),
+  village: one(villages, {
+    fields: [announcements.villageId],
+    references: [villages.id],
+  }),
+  author: one(staff, {
+    fields: [announcements.authorStaffId],
+    references: [staff.id],
+  }),
 }));
 
 export const activityLogRelations = relations(activityLog, ({ one }) => ({
-  village: one(villages, { fields: [activityLog.villageId], references: [villages.id] }),
-  actor: one(staff, { fields: [activityLog.actorStaffId], references: [staff.id] }),
+  village: one(villages, {
+    fields: [activityLog.villageId],
+    references: [villages.id],
+  }),
+  actor: one(staff, {
+    fields: [activityLog.actorStaffId],
+    references: [staff.id],
+  }),
 }));
 
 export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
-  village: one(villages, { fields: [citizenReports.villageId], references: [villages.id] }),
+  village: one(villages, {
+    fields: [citizenReports.villageId],
+    references: [villages.id],
+  }),
   neighborhood: one(neighborhoods, {
     fields: [citizenReports.neighborhoodId],
     references: [neighborhoods.id],
@@ -787,10 +1014,15 @@ export type ActivityLogEntry = typeof activityLog.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type DailyStat = typeof dailyStats.$inferSelect;
 
+export type Session = typeof sessions.$inferSelect;
+export type ResidentAccount = typeof residentAccounts.$inferSelect;
+
 export type RequestStatus = (typeof requestStatusEnum.enumValues)[number];
-export type LetterAttachmentStatus = (typeof attachmentStatusEnum.enumValues)[number];
+export type LetterAttachmentStatus =
+  (typeof attachmentStatusEnum.enumValues)[number];
 export type ActivityKind = (typeof activityKindEnum.enumValues)[number];
 export type StaffRole = (typeof staffRoleEnum.enumValues)[number];
+export type SessionActorType = (typeof sessionActorEnum.enumValues)[number];
 
 /** Recursive `created_at` trigger helper reused by the migration script. */
 export const touchUpdatedAt = sql`updated_at = now()`;

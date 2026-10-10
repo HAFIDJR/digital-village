@@ -1,4 +1,3 @@
-
 import type {
   ActivityKind,
   LetterAttachmentStatus,
@@ -50,7 +49,6 @@ export const TONE_CLASSES: Record<
   },
 };
 
-
 export const REQUEST_STATUS: Record<
   RequestStatus,
   { label: string; short: string; tone: Tone; description: string }
@@ -65,7 +63,8 @@ export const REQUEST_STATUS: Record<
     label: "Berkas Tidak Lengkap",
     short: "Berkas Kurang",
     tone: "rejected",
-    description: "Terdapat berkas yang tidak memenuhi syarat dan perlu diunggah ulang.",
+    description:
+      "Terdapat berkas yang tidak memenuhi syarat dan perlu diunggah ulang.",
   },
   DIVERIFIKASI: {
     label: "Diverifikasi",
@@ -117,9 +116,9 @@ export const UNPROCESSED_STATUSES: RequestStatus[] = [
   "BERKAS_TIDAK_LENGKAP",
 ];
 
-export const ALL_REQUEST_STATUSES = Object.keys(REQUEST_STATUS) as RequestStatus[];
-
-
+export const ALL_REQUEST_STATUSES = Object.keys(
+  REQUEST_STATUS,
+) as RequestStatus[];
 
 export const ATTACHMENT_STATUS: Record<
   LetterAttachmentStatus,
@@ -135,7 +134,11 @@ export const ATTACHMENT_STATUS: Record<
     tone: "pending",
     hint: "Hasil pindai kurang tajam; tetap terbaca namun tidak memenuhi standar arsip.",
   },
-  TIDAK_ADA: { label: "Tidak Ada", tone: "rejected", hint: "Belum diunggah oleh pemohon." },
+  TIDAK_ADA: {
+    label: "Tidak Ada",
+    tone: "rejected",
+    hint: "Belum diunggah oleh pemohon.",
+  },
   TIDAK_RELEVAN: {
     label: "Tidak Relevan",
     tone: "neutral",
@@ -143,7 +146,10 @@ export const ATTACHMENT_STATUS: Record<
   },
 };
 
-export const ACTIVITY_KIND: Record<ActivityKind, { label: string; tone: Tone }> = {
+export const ACTIVITY_KIND: Record<
+  ActivityKind,
+  { label: string; tone: Tone }
+> = {
   PENGAJUAN_BARU: { label: "Pengajuan Baru", tone: "progress" },
   VERIFIKASI_BERKAS: { label: "Verifikasi Berkas", tone: "progress" },
   PENOLAKAN: { label: "Penolakan", tone: "rejected" },
@@ -152,10 +158,11 @@ export const ACTIVITY_KIND: Record<ActivityKind, { label: string; tone: Tone }> 
   CETAK_SURAT: { label: "Cetak Surat", tone: "neutral" },
   MUTASI_PENDUDUK: { label: "Mutasi Penduduk", tone: "neutral" },
   PENGUMUMAN: { label: "Pengumuman", tone: "progress" },
-  MASUK_LOG: { label: "Log Sistem", tone: "neutral" },
+  MASUK_LOG: { label: "Masuk Sistem", tone: "progress" },
+  KELUAR_LOG: { label: "Keluar Sistem", tone: "neutral" },
+  AKTIVASI_TTD: { label: "Aktivasi Sertifikat TTD", tone: "approved" },
+  KEAMANAN_AKUN: { label: "Keamanan Akun", tone: "rejected" },
 };
-
-
 
 export const STAFF_ROLE: Record<StaffRole, string> = {
   OPERATOR_DESA: "Operator Desa",
@@ -166,17 +173,58 @@ export const STAFF_ROLE: Record<StaffRole, string> = {
   KADUS: "Kepala Dusun",
 };
 
-
 export const ROLE_CAPABILITIES: Record<
   StaffRole,
-  { verify: boolean; sign: boolean; publish: boolean; manageRegistry: boolean }
+  {
+    verify: boolean;
+    sign: boolean;
+    publish: boolean;
+    manageRegistry: boolean;
+    manageSettings: boolean;
+  }
 > = {
-  OPERATOR_DESA: { verify: true, sign: false, publish: true, manageRegistry: true },
-  SEKDES: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KASI_PELAYANAN: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KAUR_TU: { verify: true, sign: false, publish: true, manageRegistry: true },
-  KADES: { verify: false, sign: true, publish: true, manageRegistry: false },
-  KADUS: { verify: false, sign: false, publish: false, manageRegistry: false },
+  OPERATOR_DESA: {
+    verify: true,
+    sign: false,
+    publish: true,
+    manageRegistry: true,
+    manageSettings: true,
+  },
+  SEKDES: {
+    verify: true,
+    sign: false,
+    publish: true,
+    manageRegistry: true,
+    manageSettings: true,
+  },
+  KASI_PELAYANAN: {
+    verify: true,
+    sign: false,
+    publish: true,
+    manageRegistry: true,
+    manageSettings: false,
+  },
+  KAUR_TU: {
+    verify: true,
+    sign: false,
+    publish: true,
+    manageRegistry: true,
+    manageSettings: false,
+  },
+  KADES: {
+    verify: false,
+    sign: true,
+    publish: true,
+    manageRegistry: false,
+    manageSettings: true,
+  },
+  KADUS: {
+    verify: false,
+    sign: false,
+    publish: false,
+    manageRegistry: false,
+    manageSettings: false,
+  },
 };
 
 export const REPORT_STATUS: Record<string, { label: string; tone: Tone }> = {
@@ -195,8 +243,10 @@ export const REPORT_CATEGORY: Record<string, string> = {
   LAINNYA: "Lainnya",
 };
 
-
-export const ANNOUNCEMENT_CHANNEL: Record<string, { label: string; description: string }> = {
+export const ANNOUNCEMENT_CHANNEL: Record<
+  string,
+  { label: string; description: string }
+> = {
   WEBSITE_DESA: {
     label: "Website Desa",
     description: "Tampil pada halaman beranda sukamaju.desa.id",
@@ -211,14 +261,20 @@ export const ANNOUNCEMENT_CHANNEL: Record<string, { label: string; description: 
   },
 };
 
-export const ANNOUNCEMENT_STATUS: Record<string, { label: string; tone: Tone }> = {
+export const ANNOUNCEMENT_STATUS: Record<
+  string,
+  { label: string; tone: Tone }
+> = {
   DRAF: { label: "Draf", tone: "neutral" },
   TERJADWAL: { label: "Terjadwal", tone: "pending" },
   TERBIT: { label: "Terbit", tone: "approved" },
   DIARSIPKAN: { label: "Diarsipkan", tone: "neutral" },
 };
 
-export const PRIORITY: Record<string, { label: string; tone: Tone; className: string }> = {
+export const PRIORITY: Record<
+  string,
+  { label: string; tone: Tone; className: string }
+> = {
   NORMAL: { label: "Normal", tone: "neutral", className: "text-fg-subtle" },
   PRIORITAS: { label: "Prioritas", tone: "pending", className: "text-pending" },
   DARURAT: { label: "Darurat", tone: "rejected", className: "text-rejected" },
@@ -233,7 +289,6 @@ export const NOTIFICATION_SEVERITY: Record<
   WARNING: { label: "Perhatian", tone: "pending" },
   CRITICAL: { label: "Kritis", tone: "rejected" },
 };
-
 
 export const REQUEST_CHANNEL: Record<string, string> = {
   WEBSITE: "Website Desa",
@@ -300,7 +355,10 @@ export const RELIGION_LABEL: Record<string, string> = {
   LAINNYA: "Lainnya",
 };
 
-export const RESIDENT_STATUS: Record<string, { label: string; tone: Tone; hint: string }> = {
+export const RESIDENT_STATUS: Record<
+  string,
+  { label: string; tone: Tone; hint: string }
+> = {
   AKTIF: {
     label: "Aktif",
     tone: "approved",

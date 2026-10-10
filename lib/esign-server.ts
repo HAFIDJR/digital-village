@@ -1,4 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+export { hashPassword as hashPassphrase, verifyPassword as verifyPassphrase } from "@/lib/auth/password";
 
 const KEY_LENGTH = 64;
 const SALT_LENGTH = 16;
