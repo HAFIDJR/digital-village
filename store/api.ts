@@ -8,6 +8,7 @@ import type {
   AnnouncementEntry,
   ArchivePage,
   AreaOverview,
+  FamilyReport,
   FamilyRow,
   LetterTypeEntry,
   NotificationEntry,
@@ -15,6 +16,10 @@ import type {
   RegistryPage,
   ReportPage,
   RequestDetail,
+  ResidentAnnouncementEntry,
+  ResidentLetterType,
+  ResidentPortalRequest,
+  ResidentReportEntry,
   ResidentRow,
   SearchResults,
   ShellPayload,
@@ -25,9 +30,15 @@ import type {
 } from "@/db/queries";
 import type {
   AnnouncementDraft,
+  FamilyDraft,
   QueueQuery,
   RegistryQuery,
+  ReportAdvance,
+  ReportDraft,
   ReportQuery,
+  ResidentAccountDraft,
+  ResidentDraft,
+  ResidentUpdate,
   VerifyRequestInput,
 } from "@/lib/validators";
 
@@ -212,6 +223,104 @@ export type EsignActivationResponse = {
   rotated: boolean;
 };
 
+export type ResidentRequestsResponse = {
+  requests: ResidentPortalRequest[];
+  serverTime: string;
+};
+
+export type ResidentReportsResponse = {
+  reports: ResidentReportEntry[];
+  serverTime: string;
+};
+
+export type ResidentAnnouncementsResponse = {
+  announcements: ResidentAnnouncementEntry[];
+  unread: number;
+  serverTime: string;
+};
+
+export type ResidentLetterTypesResponse = {
+  letterTypes: ResidentLetterType[];
+  serverTime: string;
+};
+
+export type CreateReportResponse = {
+  ok: true;
+  report: {
+    id: string;
+    ticket: string;
+    category: string;
+    subject: string;
+    status: string;
+    priority: string;
+    submittedAt: string;
+  };
+};
+
+export type AdvanceReportResponse = {
+  ok: true;
+  ticket: string;
+  status: string;
+  resolvedAt: string | null;
+  responseCount: number;
+};
+
+export type CreateRequestResponse = {
+  ok: true;
+  request: {
+    id: string;
+    ticket: string;
+    status: string;
+    channel: string;
+    documentsUploaded: number;
+    documentsRequired: number;
+    submittedAt: string;
+    dueAt: string | null;
+  };
+};
+
+export type ResidentSummary = {
+  id: string;
+  nik: string;
+  fullName: string;
+  familyId: string | null;
+  neighborhoodId: string;
+  status: string;
+  documentsVerified: boolean;
+};
+
+export type CreateResidentResponse = {
+  ok: true;
+  resident: ResidentSummary & { gender: string; birthDate: string };
+};
+
+export type UpdateResidentResponse = { ok: true; resident: ResidentSummary };
+
+export type CreateFamilyResponse = {
+  ok: true;
+  family: {
+    id: string;
+    kkNumber: string;
+    headName: string;
+    neighborhoodId: string;
+    welfareClass: string | null;
+    memberCount: number;
+  };
+};
+
+export type CreateResidentAccountResponse = {
+  ok: true;
+  account: {
+    id: string;
+    residentId: string;
+    nik: string;
+    active: boolean;
+    createdAt: string;
+  };
+};
+
+export type RegistryReportResponse = FamilyReport & { serverTime: string };
+
 export type PublishResponse = {
   ok: true;
   announcement: {
@@ -237,6 +346,9 @@ export const TAG = {
   Staff: "Staff",
   Archive: "Archive",
   Signatures: "Signatures",
+  ResidentRequests: "ResidentRequests",
+  ResidentReports: "ResidentReports",
+  ResidentAnnouncements: "ResidentAnnouncements",
 } as const;
 
 type Tag =
@@ -251,6 +363,9 @@ type Tag =
   | typeof TAG.Staff
   | typeof TAG.Archive
   | typeof TAG.Signatures
+  | typeof TAG.ResidentRequests
+  | typeof TAG.ResidentReports
+  | typeof TAG.ResidentAnnouncements
   | { type: typeof TAG.Request; id: string };
 
 export const villageApi = createApi({
@@ -339,6 +454,118 @@ export const villageApi = createApi({
       query: () => ({ url: "signatures" }),
       providesTags: [TAG.Signatures],
     }),
+    // Portal warga — reads are resident-scoped and refresh like the operator's.
+    listResidentRequests: build.query<ResidentRequestsResponse, void>({
+      query: () => ({ url: "warga/requests" }),
+      providesTags: [TAG.ResidentRequests],
+    }),
+    listResidentReports: build.query<ResidentReportsResponse, void>({
+      query: () => ({ url: "warga/reports" }),
+      providesTags: [TAG.ResidentReports],
+    }),
+    listResidentAnnouncements: build.query<
+      ResidentAnnouncementsResponse,
+      { since?: string } | void
+    >({
+      query: (args) => ({
+        url: "warga/announcements",
+        params: args?.since ? { since: args.since } : undefined,
+      }),
+      providesTags: [TAG.ResidentAnnouncements],
+    }),
+    listResidentLetterTypes: build.query<ResidentLetterTypesResponse, void>({
+      query: () => ({ url: "warga/letter-types" }),
+      keepUnusedDataFor: 300,
+    }),
+    getRegistryReport: build.query<RegistryReportResponse, void>({
+      query: () => ({ url: "registry/report" }),
+      providesTags: [TAG.Registry],
+    }),
+
+    // Portal warga — writes
+    createReport: build.mutation<CreateReportResponse, ReportDraft>({
+      query: (body) => ({ url: "reports", method: "POST", body }),
+      invalidatesTags: () => [
+        TAG.ResidentReports,
+        TAG.Reports,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    advanceReport: build.mutation<
+      AdvanceReportResponse,
+      { id: string; body: ReportAdvance }
+    >({
+      query: ({ id, body }) => ({
+        url: `reports/${id}/status`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.Reports,
+        TAG.ResidentReports,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    createRequest: build.mutation<CreateRequestResponse, FormData>({
+      query: (body) => ({ url: "requests", method: "POST", body }),
+      invalidatesTags: () => [
+        TAG.ResidentRequests,
+        TAG.Queue,
+        { type: TAG.Request, id: "LIST" },
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    markResidentAnnouncementsRead: build.mutation<
+      { ok: true; updated: number },
+      { ids?: string[] } | void
+    >({
+      query: (body) => ({
+        url: "warga/announcements",
+        method: "POST",
+        body: body ?? {},
+      }),
+      invalidatesTags: [TAG.ResidentAnnouncements],
+    }),
+
+    // Registrasi kependudukan (capability: manageRegistry)
+    createResident: build.mutation<CreateResidentResponse, ResidentDraft>({
+      query: (body) => ({ url: "registry/residents", method: "POST", body }),
+      invalidatesTags: () => [TAG.Registry, TAG.Areas, TAG.Workspace, TAG.Activity],
+    }),
+    updateResident: build.mutation<
+      UpdateResidentResponse,
+      { id: string; body: ResidentUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `registry/residents/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: (_result, _error, { id }) => [
+        TAG.Registry,
+        TAG.Areas,
+        TAG.Workspace,
+        TAG.Activity,
+        { type: TAG.Request, id },
+      ],
+    }),
+    createFamily: build.mutation<CreateFamilyResponse, FamilyDraft>({
+      query: (body) => ({ url: "registry/families", method: "POST", body }),
+      invalidatesTags: () => [TAG.Registry, TAG.Areas, TAG.Workspace, TAG.Activity],
+    }),
+    createResidentAccount: build.mutation<
+      CreateResidentAccountResponse,
+      ResidentAccountDraft
+    >({
+      query: (body) => ({ url: "registry/accounts", method: "POST", body }),
+      invalidatesTags: () => [TAG.Registry, TAG.Workspace, TAG.Activity],
+    }),
+
     verifyRequest: build.mutation<
       VerifyResponse,
       { id: string; body: VerifyRequestInput }
@@ -448,6 +675,19 @@ export const {
   useSearchQuery,
   useListNotificationsQuery,
   useListAnnouncementsQuery,
+  useListResidentRequestsQuery,
+  useListResidentReportsQuery,
+  useListResidentAnnouncementsQuery,
+  useListResidentLetterTypesQuery,
+  useGetRegistryReportQuery,
+  useCreateReportMutation,
+  useAdvanceReportMutation,
+  useCreateRequestMutation,
+  useMarkResidentAnnouncementsReadMutation,
+  useCreateResidentMutation,
+  useUpdateResidentMutation,
+  useCreateFamilyMutation,
+  useCreateResidentAccountMutation,
   useVerifyRequestMutation,
   useSignRequestMutation,
   usePublishAnnouncementMutation,
@@ -463,6 +703,14 @@ export const villageApiMiddleware = villageApi.middleware;
 export function letterPdfUrl(id: string, mode: "draft" | "final", copies = 1) {
   const params = new URLSearchParams({ mode, copies: String(copies) });
   return `/api/requests/${id}/pdf?${params.toString()}`;
+}
+
+/**
+ * Streams an uploaded scan through the API. Only ids travel to the client —
+ * never the object-store key behind the file.
+ */
+export function attachmentFileUrl(requestId: string, attachmentId: string) {
+  return `/api/requests/${requestId}/attachments/${attachmentId}`;
 }
 
 export type { Tag };

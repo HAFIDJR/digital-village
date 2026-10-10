@@ -104,12 +104,24 @@ export const registrySortSchema = z.enum([
   "dusun_asc",
 ]);
 
-export const residentStatusSchema = z.enum([
-  "AKTIF",
-  "PINDAH_KELUAR",
-  "MENINGGAL",
-  "TIDAK_DIKENAL",
-]);
+export const residentStatusSchema = z.enum(
+  ["AKTIF", "PINDAH_KELUAR", "MENINGGAL", "TIDAK_DIKENAL"],
+  { error: "Status penduduk tidak dikenal" },
+);
+
+export const genderSchema = z.enum(["L", "P"], {
+  error: "Jenis kelamin harus L (laki-laki) atau P (perempuan)",
+});
+
+export const religionSchema = z.enum(
+  ["ISLAM", "KRISTEN", "KATOLIK", "HINDU", "BUDDHA", "KONGHUCU", "LAINNYA"],
+  { error: "Agama tidak dikenal" },
+);
+
+export const maritalStatusSchema = z.enum(
+  ["BELUM_MENIKAH", "KAWIN", "CERAI_HIDUP", "CERAI_MATI"],
+  { error: "Status perkawinan tidak dikenal" },
+);
 
 export const queueSortSchema = z.enum([
   "submitted_desc",
@@ -208,6 +220,55 @@ export function parseReportQuery(
   });
 }
 
+/** Laporan / aspirasi yang dikirim warga melalui portal atau loket pelayanan. */
+export const reportDraftSchema = z.object({
+  category: reportCategorySchema,
+  subject: z
+    .string({ error: "Judul laporan wajib diisi" })
+    .trim()
+    .min(8, "Judul laporan minimal 8 karakter")
+    .max(200, "Judul laporan maksimal 200 karakter"),
+  body: z
+    .string({ error: "Isi laporan wajib diisi" })
+    .trim()
+    .min(20, "Ceritakan kejadian minimal 20 karakter agar petugas dapat menindaklanjuti")
+    .max(2000, "Isi laporan maksimal 2.000 karakter"),
+  /** RT/RW tempat kejadian; kosong berarti mengikuti alamat pelapor. */
+  neighborhoodId: uuidSchema.optional(),
+  priority: prioritySchema.default("NORMAL"),
+  /**
+   * Only honoured when an officer files the report at the counter on somebody's
+   * behalf — portal submissions always use the signed-in resident's own data.
+   */
+  reporter: z
+    .object({
+      name: z
+        .string({ error: "Nama pelapor wajib diisi" })
+        .trim()
+        .min(3, "Nama pelapor minimal 3 karakter")
+        .max(120, "Nama pelapor maksimal 120 karakter"),
+      nik: nikSchema.optional(),
+      phone: phoneSchema.optional(),
+    })
+    .optional(),
+});
+
+export type ReportDraft = z.infer<typeof reportDraftSchema>;
+
+/** Tindak lanjut operator atas sebuah laporan warga. */
+export const reportAdvanceSchema = z.object({
+  status: z.enum(["IN_PROGRESS", "RESOLVED", "REJECTED"], {
+    error: "Status tindak lanjut tidak dikenal",
+  }),
+  note: z
+    .string()
+    .trim()
+    .max(500, "Catatan tindak lanjut maksimal 500 karakter")
+    .optional(),
+});
+
+export type ReportAdvance = z.infer<typeof reportAdvanceSchema>;
+
 export const registryQuerySchema = z.object({
   type: z.enum(["residents", "families"]).default("residents"),
   q: searchTermSchema.optional(),
@@ -236,6 +297,133 @@ export function parseRegistryQuery(
     pageSize: raw.pageSize ?? 25,
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Registration drafts (route: /penduduk, /keluarga — capability manageRegistry) */
+/* -------------------------------------------------------------------------- */
+
+const fullNameSchema = z
+  .string({ error: "Nama lengkap wajib diisi" })
+  .trim()
+  .min(3, "Nama lengkap minimal 3 karakter")
+  .max(120, "Nama lengkap maksimal 120 karakter")
+  .transform((value) => value.replace(/\s+/g, " "));
+
+const addressSchema = z
+  .string({ error: "Alamat wajib diisi" })
+  .trim()
+  .min(8, "Alamat minimal 8 karakter")
+  .max(400, "Alamat maksimal 400 karakter");
+
+/** Birth date must be a real calendar date in the past and not absurdly old. */
+const birthDateSchema = z
+  .string({ error: "Tanggal lahir wajib diisi" })
+  .pipe(isoDateSchema)
+  .refine((value) => !Number.isNaN(Date.parse(value)), "Tanggal lahir tidak valid")
+  .refine((value) => Date.parse(value) <= Date.now(), "Tanggal lahir tidak boleh di masa depan")
+  .refine(
+    (value) => Date.parse(value) >= Date.parse("1900-01-01"),
+    "Tanggal lahir di luar rentang pencatatan desa",
+  );
+
+export const residentDraftSchema = z.object({
+  nik: nikSchema,
+  fullName: fullNameSchema,
+  gender: genderSchema,
+  birthPlace: z
+    .string({ error: "Tempat lahir wajib diisi" })
+    .trim()
+    .min(3, "Tempat lahir minimal 3 karakter")
+    .max(80, "Tempat lahir maksimal 80 karakter"),
+  birthDate: birthDateSchema,
+  religion: religionSchema.default("ISLAM"),
+  maritalStatus: maritalStatusSchema.default("BELUM_MENIKAH"),
+  education: z.string().trim().max(48, "Pendidikan maksimal 48 karakter").optional(),
+  occupation: z.string().trim().max(80, "Pekerjaan maksimal 80 karakter").optional(),
+  nationality: z
+    .string({ error: "Kewarganegaraan wajib diisi" })
+    .trim()
+    .min(2, "Kewarganegaraan minimal 2 karakter")
+    .max(48, "Kewarganegaraan maksimal 48 karakter")
+    .default("WNI"),
+  familyRelation: z
+    .string({ error: "Hubungan dalam keluarga wajib diisi" })
+    .trim()
+    .min(3, "Hubungan dalam keluarga minimal 3 karakter")
+    .max(48, "Hubungan dalam keluarga maksimal 48 karakter"),
+  neighborhoodId: uuidSchema,
+  familyId: uuidSchema.optional(),
+  address: addressSchema,
+  phone: phoneSchema.optional(),
+  status: residentStatusSchema.default("AKTIF"),
+  documentsVerified: z.boolean().default(false),
+});
+
+export type ResidentDraft = z.infer<typeof residentDraftSchema>;
+
+/**
+ * Edit / population mutation. Every field is optional so an officer can
+ * correct a single attribute; a `status` change is recorded as an append-only
+ * row in `resident_mutations`.
+ */
+export const residentUpdateSchema = z
+  .object({
+    fullName: fullNameSchema.optional(),
+    birthPlace: z.string().trim().min(3).max(80).optional(),
+    birthDate: birthDateSchema.optional(),
+    religion: religionSchema.optional(),
+    maritalStatus: maritalStatusSchema.optional(),
+    education: z.string().trim().max(48).optional(),
+    occupation: z.string().trim().max(80).optional(),
+    nationality: z.string().trim().min(2).max(48).optional(),
+    familyRelation: z.string().trim().min(3).max(48).optional(),
+    neighborhoodId: uuidSchema.optional(),
+    familyId: uuidSchema.nullable().optional(),
+    address: addressSchema.optional(),
+    phone: phoneSchema.nullable().optional(),
+    status: residentStatusSchema.optional(),
+    documentsVerified: z.boolean().optional(),
+    /** Required whenever `status` changes: the civil event it records. */
+    mutationKind: z
+      .enum(
+        ["KELAHIRAN", "KEMATIAN", "PINDAH_DATANG", "PINDAH_KELUAR", "PERBAIKAN_DATA"],
+        { error: "Jenis mutasi penduduk tidak dikenal" },
+      )
+      .optional(),
+    mutationNote: z.string().trim().max(300).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type ResidentUpdate = z.infer<typeof residentUpdateSchema>;
+
+export const familyDraftSchema = z.object({
+  kkNumber: kkSchema,
+  headName: fullNameSchema,
+  neighborhoodId: uuidSchema,
+  address: addressSchema,
+  welfareClass: z
+    .string({ error: "Klasifikasi kesejahteraan wajib dipilih" })
+    .trim()
+    .min(3, "Klasifikasi kesejahteraan minimal 3 karakter")
+    .max(32, "Klasifikasi kesejahteraan maksimal 32 karakter"),
+  /** Residents moved into the new Kartu Keluarga in the same transaction. */
+  memberIds: z.array(uuidSchema).max(20).default([]),
+});
+
+export type FamilyDraft = z.infer<typeof familyDraftSchema>;
+
+export const residentAccountDraftSchema = z.object({
+  residentId: uuidSchema,
+  password: z
+    .string({ error: "Kata sandi awal wajib diisi" })
+    .min(8, "Kata sandi minimal 8 karakter")
+    .max(128, "Kata sandi maksimal 128 karakter"),
+});
+
+export type ResidentAccountDraft = z.infer<typeof residentAccountDraftSchema>;
 
 export const globalSearchSchema = z.object({
   q: z
@@ -307,6 +495,69 @@ export const markCollectedSchema = z.object({
 
 export type MarkCollectedInput = z.infer<typeof markCollectedSchema>;
 
+/* -------------------------------------------------------------------------- */
+/* Online letter submission (portal warga → antrean loket)                     */
+/* -------------------------------------------------------------------------- */
+
+/** Scan uploads are accepted as JPEG, PNG, or PDF and capped at 5 MB each. */
+export const ATTACHMENT_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "application/pdf",
+] as const;
+
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/**
+ * One uploaded file, described by the server from the multipart body itself —
+ * the client never sends a `storageKey` or a URL.
+ */
+export const letterAttachmentManifestSchema = z.object({
+  docKey: z
+    .string({ error: "Jenis berkas wajib dipilih" })
+    .trim()
+    .min(1, "Jenis berkas wajib dipilih")
+    .max(40, "Jenis berkas tidak dikenal"),
+  fileName: z
+    .string({ error: "Nama berkas wajib diisi" })
+    .trim()
+    .min(1, "Nama berkas wajib diisi")
+    .max(200, "Nama berkas maksimal 200 karakter"),
+  mimeType: z
+    .string({ error: "Tipe berkas wajib diisi" })
+    .trim()
+    .refine(
+      (value) => (ATTACHMENT_MIME_TYPES as readonly string[]).includes(value),
+      "Berkas harus berformat JPG, PNG, atau PDF",
+    ),
+  sizeBytes: z
+    .number({ error: "Ukuran berkas tidak valid" })
+    .int("Ukuran berkas tidak valid")
+    .positive("Berkas tidak boleh kosong")
+    .max(MAX_ATTACHMENT_BYTES, "Ukuran berkas maksimal 5 MB"),
+});
+
+export type LetterAttachmentManifest = z.infer<
+  typeof letterAttachmentManifestSchema
+>;
+
+export const letterRequestDraftSchema = z.object({
+  letterTypeId: uuidSchema,
+  purpose: z
+    .string({ error: "Keperluan surat wajib diisi" })
+    .trim()
+    .min(10, "Jelaskan keperluan surat minimal 10 karakter")
+    .max(500, "Keperluan surat maksimal 500 karakter"),
+  /** Free-form answers to the letter template's variables. */
+  payload: z
+    .record(z.string(), z.union([z.string(), z.number(), z.null()]))
+    .default({}),
+  channel: z.enum(["WEBSITE", "LOKET", "WHATSAPP"]).default("WEBSITE"),
+  attachments: z.array(letterAttachmentManifestSchema).max(12).default([]),
+});
+
+export type LetterRequestDraft = z.infer<typeof letterRequestDraftSchema>;
+
 export const announcementDraftSchema = z.object({
   title: z
     .string({ error: "Judul pengumuman wajib diisi" })
@@ -333,6 +584,32 @@ export const announcementDraftSchema = z.object({
 });
 
 export type AnnouncementDraft = z.infer<typeof announcementDraftSchema>;
+
+/** Marks portal announcements as read; kosong berarti tandai semua. */
+export const residentAnnouncementReadSchema = z.object({
+  ids: z.array(uuidSchema).max(50).optional(),
+});
+
+export type ResidentAnnouncementReadInput = z.infer<
+  typeof residentAnnouncementReadSchema
+>;
+
+/** `since` lets the portal poll only for broadcasts published after it last looked. */
+export const residentAnnouncementQuerySchema = z.object({
+  since: z.coerce
+    .date({ error: "Penanda waktu tidak valid" })
+    .optional(),
+  limit: z.coerce
+    .number({ error: "Batas hasil harus berupa angka" })
+    .int("Batas hasil harus bilangan bulat")
+    .min(1, "Batas hasil minimal 1")
+    .max(100, "Batas hasil maksimal 100")
+    .default(40),
+});
+
+export type ResidentAnnouncementQuery = z.infer<
+  typeof residentAnnouncementQuerySchema
+>;
 
 export const apiErrorSchema = z.object({
   error: z.object({

@@ -5,6 +5,7 @@ import {
   Check,
   CircleAlert,
   Clock3,
+  ExternalLink,
   FileText,
   IdCard,
   LoaderCircle,
@@ -52,6 +53,7 @@ import { cn } from "@/lib/utils";
 import type { AttachmentView, RequestDetail } from "@/db/queries";
 import type { LetterAttachmentStatus } from "@/db/schema";
 import {
+  attachmentFileUrl,
   errorMessage,
   letterPdfUrl,
   useGetRequestQuery,
@@ -529,7 +531,11 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
                     </div>
                   </div>
 
-                  <ScanPlaceholder attachment={current} zoom={zoom} />
+                  <ScanPlaceholder
+                    attachment={current}
+                    zoom={zoom}
+                    requestId={detail.id}
+                  />
 
                   {/* --- per-document verdict --------------------------- */}
                   <div className="rounded-sm border border-line bg-surface-muted p-2.5">
@@ -1181,13 +1187,88 @@ function AttachmentThumb({
     </button>
   );
 }
-function ScanPlaceholder({
+/**
+ * Renders the uploaded scan when the bytes exist in village storage, and the
+ * KTP-shaped placeholder for seeded demo rows that carry a key with no file.
+ */
+function ScanPreview({
   attachment,
   zoom,
+  requestId,
 }: {
   attachment: AttachmentView;
   zoom: number;
+  requestId: string;
 }) {
+  const url = attachmentFileUrl(requestId, attachment.id);
+  const isImage = attachment.mimeType.startsWith("image/");
+
+  return (
+    <figure
+      className="relative overflow-hidden rounded-sm border border-line-strong bg-surface"
+      aria-label={`Pratinjau berkas ${attachment.label}`}
+    >
+      <div
+        className="bg-scan-grid origin-top-left transition-transform duration-200"
+        style={{ transform: `scale(${zoom})` }}
+      >
+        {isImage ? (
+          // eslint-disable-next-line @next/next/no-img-element -- streamed from the village store, not a static asset
+          <img
+            src={url}
+            alt={`Hasil pindai ${attachment.label}`}
+            className="w-full object-contain"
+          />
+        ) : (
+          <object
+            data={url}
+            type={attachment.mimeType}
+            className="h-96 w-full"
+            aria-label={`Berkas ${attachment.label}`}
+          >
+            <p className="p-3 text-2xs text-fg-muted">
+              Peramban Anda tidak dapat menampilkan berkas ini.{" "}
+              <a className="text-civic underline" href={url} target="_blank" rel="noreferrer">
+                Buka pada tab baru
+              </a>
+              .
+            </p>
+          </object>
+        )}
+      </div>
+
+      <figcaption className="flex flex-wrap items-center justify-between gap-2 border-t border-line bg-surface-muted px-2.5 py-1.5 text-[10px] leading-4 text-fg-subtle">
+        <span className="truncate">
+          {attachment.fileName} · {formatBytes(attachment.sizeBytes)} · diunggah{" "}
+          {formatDateTime(attachment.uploadedAt)}
+        </span>
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex shrink-0 items-center gap-1 text-civic hover:underline"
+        >
+          <ExternalLink className="size-3" aria-hidden />
+          Buka ukuran penuh
+        </a>
+      </figcaption>
+    </figure>
+  );
+}
+
+function ScanPlaceholder({
+  attachment,
+  zoom,
+  requestId,
+}: {
+  attachment: AttachmentView;
+  zoom: number;
+  requestId: string;
+}) {
+  if (attachment.stored) {
+    return <ScanPreview attachment={attachment} zoom={zoom} requestId={requestId} />;
+  }
+
   return (
     <figure
       className="relative overflow-hidden rounded-sm border border-line-strong bg-surface"
