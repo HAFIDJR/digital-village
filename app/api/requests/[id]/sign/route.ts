@@ -1,13 +1,12 @@
 import { getVillageProfile } from "@/db/queries";
 import { DomainError, signLetterRequest } from "@/db/commands";
 import { signRequestSchema } from "@/lib/validators";
-import { getDb } from "@/db/client";
-import { and, eq } from "drizzle-orm";
-import * as t from "@/db/schema";
+import { requireStaffOfficer } from "@/lib/auth/guard";
 
 import { parseBody, withApi } from "../../../_lib/respond";
 
 export const dynamic = "force-dynamic";
+
 
 export async function POST(
   request: Request,
@@ -22,31 +21,20 @@ export async function POST(
     if (!village)
       throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
 
-    const db = await getDb();
-    const [signer] = await db
-      .select()
-      .from(t.staff)
-      .where(
-        and(
-          eq(t.staff.villageId, village.id),
-          eq(t.staff.canSign, true),
-          eq(t.staff.active, true),
-        ),
-      )
-      .limit(1);
+    const { officer } = await requireStaffOfficer();
 
-    if (!signer) {
+    if (!officer.canSign) {
       throw new DomainError(
-        "Pejabat penanda tangan belum dikonfigurasi.",
-        "NO_SIGNER",
-        409,
+        "Hanya Kepala Desa selaku pejabat penanda tangan yang dapat menandatangani surat. Teruskan berkas ke agenda tanda tangan untuk diproses.",
+        "NOT_AUTHORISED_SIGNER",
+        403,
       );
     }
 
     const result = await signLetterRequest({
       villageId: village.id,
       requestId: id,
-      staffId: signer.id,
+      staffId: officer.id,
       passphrase: payload.passphrase,
       certificateSerial: payload.certificateSerial,
     });
@@ -56,7 +44,7 @@ export async function POST(
       ticket: result.request.ticket,
       status: result.request.status,
       certificateSerial: result.certificateSerial,
-      signerName: signer.fullName,
+      signerName: officer.fullName,
       signedAt: result.request.signedAt,
     };
   });

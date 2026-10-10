@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 
 import { Kbd } from "@/components/ui/primitives";
 import { formatNumber } from "@/lib/format";
@@ -36,7 +37,13 @@ const fallbackVillage: VillageProfile = {
 
 export function DashboardFrame({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch();
+  const router = useRouter();
   const { data, isLoading, isError, error, refetch, fulfilledTimeStamp } = useGetShellQuery();
+  React.useEffect(() => {
+    if (isError && (error as { status?: number } | undefined)?.status === 401) {
+      router.replace("/masuk");
+    }
+  }, [isError, error, router]);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

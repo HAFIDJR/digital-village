@@ -2,6 +2,7 @@ import { readEsignPassphrase } from "@/lib/esign";
 
 import { runMigrations } from "../migrate";
 import { seedDatabase } from "../seed";
+import { DEMO_STAFF_PASSWORD, DEMO_WARGA_NIK, DEMO_WARGA_PASSWORD } from "@/lib/auth/demo";
 
 async function main() {
   const reset = process.argv.includes("--reset");
@@ -37,6 +38,8 @@ async function main() {
       : "[seed] e-sign passphrase taken from ESIGN_PASSPHRASE",
   );
 }
+console.log(`[seed] staff login: any seeded email + "${DEMO_STAFF_PASSWORD}"`);
+console.log(`[seed] warga login: NIK ${DEMO_WARGA_NIK} + "${DEMO_WARGA_PASSWORD}"`);
 
 /** Drizzle wraps driver errors; unwrap the chain so the real cause is legible. */
 function reportError(error: unknown) {

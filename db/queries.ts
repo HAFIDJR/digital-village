@@ -3,8 +3,9 @@ import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 
 import { getDb } from "./client";
+import { getSessionId } from "@/lib/auth/session";
+import { readEsignTrainingHint } from "@/lib/esign";
 import type { QueueQuery, RegistryQuery, ReportQuery } from "@/lib/validators";
-
 
 export type VillageProfile = {
   id: string;
@@ -32,6 +33,7 @@ export type ActiveOfficer = {
   nipd: string | null;
   email: string;
   canSign: boolean;
+  signatureActivated: boolean;
   shiftStartedAt: string | null;
   shiftStation: string | null;
 };
@@ -155,8 +157,19 @@ export type RequestDetail = {
     address: string;
     status: string | null;
   };
-  family: { id: string | null; kkNumber: string | null; headName: string | null; memberCount: number | null };
-  location: { dusun: string; dusunCode: string; rt: number; rw: number; headName: string | null };
+  family: {
+    id: string | null;
+    kkNumber: string | null;
+    headName: string | null;
+    memberCount: number | null;
+  };
+  location: {
+    dusun: string;
+    dusunCode: string;
+    rt: number;
+    rw: number;
+    headName: string | null;
+  };
   attachments: AttachmentView[];
   missingRequirements: { docKey: string; label: string; mandatory: boolean }[];
   signature: {
@@ -170,7 +183,12 @@ export type RequestDetail = {
     signerName: string | null;
     note: string | null;
   } | null;
-  officer: { id: string; fullName: string; jobTitle: string; initials: string } | null;
+  officer: {
+    id: string;
+    fullName: string;
+    jobTitle: string;
+    initials: string;
+  } | null;
   timeline: {
     id: string;
     kind: string;
@@ -314,7 +332,12 @@ export async function getVillageProfile(): Promise<VillageProfile | null> {
   return result.rows[0] ?? null;
 }
 
-export async function getActiveOfficer(villageId: string): Promise<ActiveOfficer | null> {
+export async function getActiveOfficer(
+  villageId: string,
+): Promise<ActiveOfficer | null> {
+  const sessionId = await getSessionId();
+  if (!sessionId) return null;
+
   const db = await getDb();
   const result = await db.execute<ActiveOfficer>(sql`
     select s.id,
@@ -325,20 +348,29 @@ export async function getActiveOfficer(villageId: string): Promise<ActiveOfficer
            s.nipd,
            s.email,
            s.can_sign        as "canSign",
+           (s.signature_passphrase_hash is not null) as "signatureActivated",
            sh.started_at     as "shiftStartedAt",
            sh.station        as "shiftStation"
-    from staff s
-    left join staff_shifts sh
-      on sh.staff_id = s.id and sh.ended_at is null
-    where s.village_id = ${villageId}
-      and s.active = true
-    order by (sh.started_at is null), s.created_at
+     from sessions ses
+    join staff s
+      on s.id = ses.actor_id
+     and s.village_id = ${villageId}
+     and s.active = true
+    left join lateral (
+      select started_at, station
+      from staff_shifts
+      where staff_id = s.id and ended_at is null
+      order by started_at desc
+      limit 1
+    ) sh on true
+    where ses.id = ${sessionId}
+      and ses.actor_type = 'STAFF'
+      and ses.revoked_at is null
+      and ses.expires_at > now()
     limit 1
   `);
   return result.rows[0] ?? null;
 }
-
-
 
 export async function getKpiSummary(villageId: string): Promise<KpiSummary> {
   const db = await getDb();
@@ -436,7 +468,8 @@ export async function getKpiSummary(villageId: string): Promise<KpiSummary> {
    */
   const onlineThreshold = Date.now() - 30 * 60_000;
   const signerOnline = Boolean(
-    signerRow?.lastSeenAt && new Date(signerRow.lastSeenAt).getTime() >= onlineThreshold,
+    signerRow?.lastSeenAt &&
+    new Date(signerRow.lastSeenAt).getTime() >= onlineThreshold,
   );
 
   const delta =
@@ -463,7 +496,8 @@ export async function getKpiSummary(villageId: string): Promise<KpiSummary> {
     signerName: signerRow?.fullName ?? "Kepala Desa",
     signerLastSeenAt: signerRow?.lastSeenAt ?? null,
     overdueCount: row.overdueCount,
-    avgTurnaroundHours: row.avgTurnaroundHours === null ? null : Number(row.avgTurnaroundHours),
+    avgTurnaroundHours:
+      row.avgTurnaroundHours === null ? null : Number(row.avgTurnaroundHours),
   };
 }
 
@@ -505,7 +539,9 @@ function buildQueueFilter(villageId: string, query: QueueQuery): SQL {
       'PENDING_VERIFIKASI','BERKAS_TIDAK_LENGKAP','DIVERIFIKASI','MENUNGGU_TTD_KADES'
     )`);
   } else if (query.sla === "today") {
-    conditions.push(sql`lr.due_at < date_trunc('day', now()) + interval '1 day'`);
+    conditions.push(
+      sql`lr.due_at < date_trunc('day', now()) + interval '1 day'`,
+    );
   }
 
   return sql.join(conditions, sql` and `);
@@ -532,9 +568,15 @@ export async function listLetterRequests(
   const filter = buildQueueFilter(villageId, query);
   const offset = (query.page - 1) * query.pageSize;
 
-  const [rowsResult, countResult, statusResult, dusunResult, typeResult, overdueResult] =
-    await Promise.all([
-      db.execute<QueueRow>(sql`
+  const [
+    rowsResult,
+    countResult,
+    statusResult,
+    dusunResult,
+    typeResult,
+    overdueResult,
+  ] = await Promise.all([
+    db.execute<QueueRow>(sql`
         select lr.id,
                lr.ticket,
                lr.applicant_name                          as "applicantName",
@@ -569,7 +611,7 @@ export async function listLetterRequests(
         limit ${query.pageSize} offset ${offset}
       `),
 
-      db.execute<{ total: number }>(sql`
+    db.execute<{ total: number }>(sql`
         select count(*)::int as total
         from letter_requests lr
         join letter_types lt on lt.id = lr.letter_type_id
@@ -578,14 +620,14 @@ export async function listLetterRequests(
         where ${filter}
       `),
 
-      db.execute<{ status: string; count: number }>(sql`
+    db.execute<{ status: string; count: number }>(sql`
         select lr.status::text as status, count(*)::int as count
         from letter_requests lr
         where lr.village_id = ${villageId}
         group by 1
       `),
 
-      db.execute<{ dusun: string; code: string; count: number }>(sql`
+    db.execute<{ dusun: string; code: string; count: number }>(sql`
         select split_part(h.name, ' - ', 1) as dusun, h.code, count(*)::int as count
         from letter_requests lr
         join neighborhoods n on n.id = lr.neighborhood_id
@@ -595,7 +637,7 @@ export async function listLetterRequests(
         order by 2
       `),
 
-      db.execute<{ code: string; name: string; count: number }>(sql`
+    db.execute<{ code: string; name: string; count: number }>(sql`
         select lt.code, lt.name, count(*)::int as count
         from letter_requests lr
         join letter_types lt on lt.id = lr.letter_type_id
@@ -604,7 +646,7 @@ export async function listLetterRequests(
         order by 3 desc
       `),
 
-      db.execute<{ overdue: number }>(sql`
+    db.execute<{ overdue: number }>(sql`
         select count(*)::int as overdue
         from letter_requests lr
         join letter_types lt on lt.id = lr.letter_type_id
@@ -615,7 +657,7 @@ export async function listLetterRequests(
             'PENDING_VERIFIKASI','BERKAS_TIDAK_LENGKAP','DIVERIFIKASI','MENUNGGU_TTD_KADES'
           )
       `),
-    ]);
+  ]);
 
   const total = countResult.rows[0]?.total ?? 0;
 
@@ -625,8 +667,14 @@ export async function listLetterRequests(
     page: query.page,
     pageSize: query.pageSize,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    statusCounts: Object.fromEntries(statusResult.rows.map((r) => [r.status, r.count])),
-    dusunCounts: dusunResult.rows.map((r) => ({ code: r.code, name: r.dusun, count: r.count })),
+    statusCounts: Object.fromEntries(
+      statusResult.rows.map((r) => [r.status, r.count]),
+    ),
+    dusunCounts: dusunResult.rows.map((r) => ({
+      code: r.code,
+      name: r.dusun,
+      count: r.count,
+    })),
     letterTypeCounts: typeResult.rows,
     overdueTotal: overdueResult.rows[0]?.overdue ?? 0,
   };
@@ -764,8 +812,9 @@ export async function getRequestDetail(
   const row = head.rows[0];
   if (!row) return null;
 
-  const [attachmentResult, requirementResult, signatureResult, timelineResult] = await Promise.all([
-    db.execute<AttachmentView>(sql`
+  const [attachmentResult, requirementResult, signatureResult, timelineResult] =
+    await Promise.all([
+      db.execute<AttachmentView>(sql`
       select a.id,
              a.doc_key      as "docKey",
              a.label,
@@ -782,24 +831,24 @@ export async function getRequestDetail(
       order by a.uploaded_at
     `),
 
-    db.execute<{ docKey: string; label: string; mandatory: boolean }>(sql`
+      db.execute<{ docKey: string; label: string; mandatory: boolean }>(sql`
       select req.doc_key as "docKey", req.label, req.mandatory
       from letter_requirements req
       where req.letter_type_id = ${row.letterId}
       order by req.sort_order
     `),
 
-    db.execute<{
-      id: string;
-      status: string;
-      certificateSerial: string | null;
-      requestedAt: string;
-      signedAt: string | null;
-      expiresAt: string | null;
-      requestedByName: string | null;
-      signerName: string | null;
-      note: string | null;
-    }>(sql`
+      db.execute<{
+        id: string;
+        status: string;
+        certificateSerial: string | null;
+        requestedAt: string;
+        signedAt: string | null;
+        expiresAt: string | null;
+        requestedByName: string | null;
+        signerName: string | null;
+        note: string | null;
+      }>(sql`
       select sr.id,
              sr.status::text          as status,
              sr.certificate_serial    as "certificateSerial",
@@ -817,15 +866,15 @@ export async function getRequestDetail(
       limit 1
     `),
 
-    db.execute<{
-      id: string;
-      kind: string;
-      summary: string;
-      actorName: string;
-      actorInitials: string;
-      actorRole: string;
-      occurredAt: string;
-    }>(sql`
+      db.execute<{
+        id: string;
+        kind: string;
+        summary: string;
+        actorName: string;
+        actorInitials: string;
+        actorRole: string;
+        occurredAt: string;
+      }>(sql`
       select id,
              kind::text  as kind,
              summary,
@@ -838,12 +887,16 @@ export async function getRequestDetail(
       order by occurred_at desc
       limit 20
     `),
-  ]);
+    ]);
 
   const uploadedKeys = new Set(attachmentResult.rows.map((a) => a.docKey));
   const missingRequirements = requirementResult.rows
     .filter((req) => !uploadedKeys.has(req.docKey))
-    .map((req) => ({ docKey: req.docKey, label: req.label, mandatory: req.mandatory }));
+    .map((req) => ({
+      docKey: req.docKey,
+      label: req.label,
+      mandatory: req.mandatory,
+    }));
 
   const signatureRow = signatureResult.rows[0] ?? null;
 
@@ -930,7 +983,10 @@ export async function getRequestDetail(
 /* Activity, notifications, reports, announcements                             */
 /* -------------------------------------------------------------------------- */
 
-export async function getActivityFeed(villageId: string, limit = 12): Promise<ActivityEntry[]> {
+export async function getActivityFeed(
+  villageId: string,
+  limit = 12,
+): Promise<ActivityEntry[]> {
   const db = await getDb();
   const result = await db.execute<ActivityEntry>(sql`
     select id,
@@ -969,7 +1025,10 @@ export async function getNotifications(
   return result.rows;
 }
 
-export async function getReports(villageId: string, limit = 20): Promise<ReportEntry[]> {
+export async function getReports(
+  villageId: string,
+  limit = 20,
+): Promise<ReportEntry[]> {
   const db = await getDb();
   const result = await db.execute<ReportEntry>(sql`
     select cr.id,
@@ -998,7 +1057,10 @@ export async function getReports(villageId: string, limit = 20): Promise<ReportE
   return result.rows;
 }
 
-export async function getAnnouncements(villageId: string, limit = 6): Promise<AnnouncementEntry[]> {
+export async function getAnnouncements(
+  villageId: string,
+  limit = 6,
+): Promise<AnnouncementEntry[]> {
   const db = await getDb();
   const result = await db.execute<AnnouncementEntry>(sql`
     select a.id,
@@ -1120,7 +1182,8 @@ export async function globalSearch(
     residents: residents.rows,
     requests: requests.rows,
     reports: reports.rows,
-    totalMatches: (total?.residents ?? 0) + (total?.requests ?? 0) + (total?.reports ?? 0),
+    totalMatches:
+      (total?.residents ?? 0) + (total?.requests ?? 0) + (total?.reports ?? 0),
   };
 }
 
@@ -1128,7 +1191,10 @@ export async function globalSearch(
 /* Trend + options                                                             */
 /* -------------------------------------------------------------------------- */
 
-export async function getServiceTrend(villageId: string, days = 14): Promise<ServiceTrendPoint[]> {
+export async function getServiceTrend(
+  villageId: string,
+  days = 14,
+): Promise<ServiceTrendPoint[]> {
   const db = await getDb();
   const result = await db.execute<ServiceTrendPoint>(sql`
     select stat_date::text as "statDate",
@@ -1144,24 +1210,31 @@ export async function getServiceTrend(villageId: string, days = 14): Promise<Ser
 }
 
 /** Everything the first paint of the dashboard needs, in one HTTP call. */
-export async function getWorkspaceOverview(query: QueueQuery): Promise<WorkspaceOverview | null> {
+export async function getWorkspaceOverview(
+  query: QueueQuery,
+): Promise<WorkspaceOverview | null> {
   const village = await getVillageProfile();
   if (!village) return null;
 
   const officer = await getActiveOfficer(village.id);
 
-  const [kpi, queue, activity, notifications, reports, announcements, trend] = await Promise.all([
-    getKpiSummary(village.id),
-    listLetterRequests(village.id, query),
-    getActivityFeed(village.id, 10),
-    getNotifications(village.id, officer?.id ?? null),
-    getReports(village.id, 12),
-    getAnnouncements(village.id, 5),
-    getServiceTrend(village.id, 14),
-  ]);
+  const [kpi, queue, activity, notifications, reports, announcements, trend] =
+    await Promise.all([
+      getKpiSummary(village.id),
+      listLetterRequests(village.id, query),
+      getActivityFeed(village.id, 10),
+      getNotifications(village.id, officer?.id ?? null),
+      getReports(village.id, 12),
+      getAnnouncements(village.id, 5),
+      getServiceTrend(village.id, 14),
+    ]);
 
   const db = await getDb();
-  const dusunRows = await db.execute<{ code: string; name: string; count: number }>(sql`
+  const dusunRows = await db.execute<{
+    code: string;
+    name: string;
+    count: number;
+  }>(sql`
       select h.code,
              split_part(h.name, ' - ', 1) as name,
              count(n.id)::int as count
@@ -1182,7 +1255,11 @@ export async function getWorkspaceOverview(query: QueueQuery): Promise<Workspace
     reports,
     announcements,
     trend,
-    letterTypes: queue.letterTypeCounts.map((t) => ({ code: t.code, name: t.name, count: t.count })),
+    letterTypes: queue.letterTypeCounts.map((t) => ({
+      code: t.code,
+      name: t.name,
+      count: t.count,
+    })),
     dusunOptions: dusunRows.rows,
     serverTime: new Date().toISOString(),
   };
@@ -1279,14 +1356,23 @@ function reportOrder(sort: ReportQuery["sort"]): SQL {
  * summary deliberately ignores the active filters — it is the "how are we
  * doing" figure an officer quotes in a meeting, not a re-count of the table.
  */
-export async function listReports(villageId: string, query: ReportQuery): Promise<ReportPage> {
+export async function listReports(
+  villageId: string,
+  query: ReportQuery,
+): Promise<ReportPage> {
   const db = await getDb();
   const filter = buildReportFilter(villageId, query);
   const offset = (query.page - 1) * query.pageSize;
 
-  const [rowsResult, countResult, statusResult, categoryResult, dusunResult, summaryResult] =
-    await Promise.all([
-      db.execute<ReportRow>(sql`
+  const [
+    rowsResult,
+    countResult,
+    statusResult,
+    categoryResult,
+    dusunResult,
+    summaryResult,
+  ] = await Promise.all([
+    db.execute<ReportRow>(sql`
         select cr.id,
                cr.ticket,
                cr.reporter_name  as "reporterName",
@@ -1316,7 +1402,7 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
         limit ${query.pageSize} offset ${offset}
       `),
 
-      db.execute<{ total: number }>(sql`
+    db.execute<{ total: number }>(sql`
         select count(*)::int as total
         from citizen_reports cr
         left join neighborhoods n on n.id = cr.neighborhood_id
@@ -1324,14 +1410,14 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
         where ${filter}
       `),
 
-      db.execute<{ status: string; count: number }>(sql`
+    db.execute<{ status: string; count: number }>(sql`
         select cr.status, count(*)::int as count
         from citizen_reports cr
         where cr.village_id = ${villageId}
         group by 1
       `),
 
-      db.execute<{ category: string; count: number }>(sql`
+    db.execute<{ category: string; count: number }>(sql`
         select cr.category, count(*)::int as count
         from citizen_reports cr
         where cr.village_id = ${villageId}
@@ -1339,7 +1425,7 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
         order by 2 desc, 1
       `),
 
-      db.execute<{ code: string; name: string; count: number }>(sql`
+    db.execute<{ code: string; name: string; count: number }>(sql`
         select h.code, split_part(h.name, ' - ', 1) as name, count(*)::int as count
         from citizen_reports cr
         join neighborhoods n on n.id = cr.neighborhood_id
@@ -1349,7 +1435,7 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
         order by 1
       `),
 
-      db.execute<ReportSummary>(sql`
+    db.execute<ReportSummary>(sql`
         select count(*)::int                                                    as total,
                count(*) filter (where status = 'NEW')::int                      as "newCount",
                count(*) filter (where status = 'IN_PROGRESS')::int              as "inProgress",
@@ -1364,7 +1450,7 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
         from citizen_reports
         where village_id = ${villageId}
       `),
-    ]);
+  ]);
 
   const total = countResult.rows[0]?.total ?? 0;
   const summary = summaryResult.rows[0] ?? {
@@ -1392,7 +1478,9 @@ export async function listReports(villageId: string, query: ReportQuery): Promis
     page: query.page,
     pageSize: query.pageSize,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    statusCounts: Object.fromEntries(statusResult.rows.map((r) => [r.status, r.count])),
+    statusCounts: Object.fromEntries(
+      statusResult.rows.map((r) => [r.status, r.count]),
+    ),
     categoryCounts,
     dusunCounts: dusunResult.rows,
     summary: { ...summary, topCategory: categoryCounts[0] ?? null },
@@ -1519,8 +1607,9 @@ export async function listResidents(
   const filter = buildResidentFilter(villageId, query);
   const offset = (query.page - 1) * query.pageSize;
 
-  const [rowsResult, countResult, statusResult, dusunResult, totalsResult] = await Promise.all([
-    db.execute<ResidentRow>(sql`
+  const [rowsResult, countResult, statusResult, dusunResult, totalsResult] =
+    await Promise.all([
+      db.execute<ResidentRow>(sql`
       select r.id,
              r.nik,
              r.full_name        as "fullName",
@@ -1551,7 +1640,7 @@ export async function listResidents(
       limit ${query.pageSize} offset ${offset}
     `),
 
-    db.execute<{ total: number }>(sql`
+      db.execute<{ total: number }>(sql`
       select count(*)::int as total
       from residents r
       join neighborhoods n on n.id = r.neighborhood_id
@@ -1560,14 +1649,14 @@ export async function listResidents(
       where ${filter}
     `),
 
-    db.execute<{ status: string; count: number }>(sql`
+      db.execute<{ status: string; count: number }>(sql`
       select r.status::text as status, count(*)::int as count
       from residents r
       where r.village_id = ${villageId}
       group by 1
     `),
 
-    db.execute<{ code: string; name: string; count: number }>(sql`
+      db.execute<{ code: string; name: string; count: number }>(sql`
       select h.code, split_part(h.name, ' - ', 1) as name, count(*)::int as count
       from residents r
       join neighborhoods n on n.id = r.neighborhood_id
@@ -1577,14 +1666,14 @@ export async function listResidents(
       order by 1
     `),
 
-    db.execute<{
-      residents: number;
-      families: number;
-      male: number;
-      female: number;
-      inactive: number;
-      members: number;
-    }>(sql`
+      db.execute<{
+        residents: number;
+        families: number;
+        male: number;
+        female: number;
+        inactive: number;
+        members: number;
+      }>(sql`
       select (select count(*)::int from residents where village_id = ${villageId} and status = 'AKTIF') as residents,
              (select count(*)::int from families where village_id = ${villageId}) as families,
              (select count(*)::int from residents where village_id = ${villageId} and status = 'AKTIF' and gender = 'L') as male,
@@ -1592,7 +1681,7 @@ export async function listResidents(
              (select count(*)::int from residents where village_id = ${villageId} and status <> 'AKTIF') as inactive,
              (select coalesce(sum(member_count), 0)::int from families where village_id = ${villageId}) as members
     `),
-  ]);
+    ]);
 
   const total = countResult.rows[0]?.total ?? 0;
 
@@ -1602,7 +1691,9 @@ export async function listResidents(
     page: query.page,
     pageSize: query.pageSize,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    statusCounts: Object.fromEntries(statusResult.rows.map((r) => [r.status, r.count])),
+    statusCounts: Object.fromEntries(
+      statusResult.rows.map((r) => [r.status, r.count]),
+    ),
     dusunCounts: dusunResult.rows,
     totals: totalsResult.rows[0] ?? {
       residents: 0,
@@ -1624,8 +1715,9 @@ export async function listFamilies(
   const filter = buildFamilyFilter(villageId, query);
   const offset = (query.page - 1) * query.pageSize;
 
-  const [rowsResult, countResult, dusunResult, totalsResult] = await Promise.all([
-    db.execute<FamilyRow>(sql`
+  const [rowsResult, countResult, dusunResult, totalsResult] =
+    await Promise.all([
+      db.execute<FamilyRow>(sql`
       select f.id,
              f.kk_number     as "kkNumber",
              f.head_name     as "headName",
@@ -1652,7 +1744,7 @@ export async function listFamilies(
       limit ${query.pageSize} offset ${offset}
     `),
 
-    db.execute<{ total: number }>(sql`
+      db.execute<{ total: number }>(sql`
       select count(*)::int as total
       from families f
       join neighborhoods n on n.id = f.neighborhood_id
@@ -1660,7 +1752,7 @@ export async function listFamilies(
       where ${filter}
     `),
 
-    db.execute<{ code: string; name: string; count: number }>(sql`
+      db.execute<{ code: string; name: string; count: number }>(sql`
       select h.code, split_part(h.name, ' - ', 1) as name, count(*)::int as count
       from families f
       join neighborhoods n on n.id = f.neighborhood_id
@@ -1670,14 +1762,14 @@ export async function listFamilies(
       order by 1
     `),
 
-    db.execute<{
-      residents: number;
-      families: number;
-      male: number;
-      female: number;
-      inactive: number;
-      members: number;
-    }>(sql`
+      db.execute<{
+        residents: number;
+        families: number;
+        male: number;
+        female: number;
+        inactive: number;
+        members: number;
+      }>(sql`
       select (select count(*)::int from residents where village_id = ${villageId} and status = 'AKTIF') as residents,
              (select count(*)::int from families where village_id = ${villageId}) as families,
              (select count(*)::int from residents where village_id = ${villageId} and status = 'AKTIF' and gender = 'L') as male,
@@ -1685,7 +1777,7 @@ export async function listFamilies(
              (select count(*)::int from residents where village_id = ${villageId} and status <> 'AKTIF') as inactive,
              (select coalesce(sum(member_count), 0)::int from families where village_id = ${villageId}) as members
     `),
-  ]);
+    ]);
 
   const total = countResult.rows[0]?.total ?? 0;
 
@@ -1847,7 +1939,9 @@ export type LetterTypeEntry = {
 };
 
 /** The service catalogue: what the village issues and how long it may take. */
-export async function listLetterTypes(villageId: string): Promise<LetterTypeEntry[]> {
+export async function listLetterTypes(
+  villageId: string,
+): Promise<LetterTypeEntry[]> {
   const db = await getDb();
   const result = await db.execute<LetterTypeEntry>(sql`
     select lt.code,
@@ -1991,8 +2085,9 @@ export async function listArchivedLetters(
   const filter = sql.join(conditions, sql` and `);
   const offset = (query.page - 1) * query.pageSize;
 
-  const [rowsResult, countResult, statusResult, signedResult] = await Promise.all([
-    db.execute<ArchivedLetter>(sql`
+  const [rowsResult, countResult, statusResult, signedResult] =
+    await Promise.all([
+      db.execute<ArchivedLetter>(sql`
       select lr.id,
              lr.ticket,
              lr.applicant_name as "applicantName",
@@ -2019,7 +2114,7 @@ export async function listArchivedLetters(
       limit ${query.pageSize} offset ${offset}
     `),
 
-    db.execute<{ total: number }>(sql`
+      db.execute<{ total: number }>(sql`
       select count(*)::int as total
       from letter_requests lr
       join letter_types lt on lt.id = lr.letter_type_id
@@ -2028,7 +2123,7 @@ export async function listArchivedLetters(
       where ${filter}
     `),
 
-    db.execute<{ status: string; count: number }>(sql`
+      db.execute<{ status: string; count: number }>(sql`
       select lr.status::text as status, count(*)::int as count
       from letter_requests lr
       where lr.village_id = ${villageId}
@@ -2036,13 +2131,13 @@ export async function listArchivedLetters(
       group by 1
     `),
 
-    db.execute<{ signed: number }>(sql`
+      db.execute<{ signed: number }>(sql`
       select count(*)::int as signed
       from signature_requests sr
       join letter_requests lr on lr.id = sr.request_id
       where lr.village_id = ${villageId} and sr.status::text = 'DITANDATANGANI'
     `),
-  ]);
+    ]);
 
   const total = countResult.rows[0]?.total ?? 0;
 
@@ -2052,7 +2147,9 @@ export async function listArchivedLetters(
     page: query.page,
     pageSize: query.pageSize,
     totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-    statusCounts: Object.fromEntries(statusResult.rows.map((r) => [r.status, r.count])),
+    statusCounts: Object.fromEntries(
+      statusResult.rows.map((r) => [r.status, r.count]),
+    ),
     signedTotal: signedResult.rows[0]?.signed ?? 0,
   };
 }
@@ -2075,9 +2172,9 @@ export type ShellPayload = {
     families: number;
     announcementsPublished: number;
   };
+  esignTrainingHint: string | null;
   serverTime: string;
 };
-
 
 export async function getShellPayload(): Promise<ShellPayload | null> {
   const village = await getVillageProfile();
@@ -2130,6 +2227,111 @@ export async function getShellPayload(): Promise<ShellPayload | null> {
       families: 0,
       announcementsPublished: 0,
     },
+    esignTrainingHint: officer?.canSign ? readEsignTrainingHint() : null,
     serverTime: new Date().toISOString(),
+  };
+}
+
+export type ResidentPortalRequest = {
+  id: string;
+  ticket: string;
+  letterName: string;
+  letterCode: string;
+  status: string;
+  priority: string;
+  purpose: string;
+  submittedAt: string;
+  dueAt: string | null;
+  signedAt: string | null;
+  completedAt: string | null;
+  verificationCode: string;
+  certificateSerial: string | null;
+  agendaNumber: number | null;
+  downloadable: boolean;
+};
+
+export type ResidentPortalData = {
+  resident: {
+    fullName: string;
+    nik: string;
+    address: string;
+    phone: string | null;
+    dusun: string;
+    rt: number;
+    rw: number;
+  };
+  family: { kkNumber: string | null; headName: string | null; memberCount: number | null } | null;
+  requests: ResidentPortalRequest[];
+};
+
+export async function getResidentPortalData(residentId: string): Promise<ResidentPortalData | null> {
+  const db = await getDb();
+  const base = await db.execute<{
+    fullName: string;
+    nik: string;
+    address: string;
+    phone: string | null;
+    dusun: string;
+    rt: number;
+    rw: number;
+    kkNumber: string | null;
+    headName: string | null;
+    memberCount: number | null;
+  }>(sql`
+    select r.full_name   as "fullName",
+           r.nik,
+           r.address,
+           r.phone,
+           split_part(h.name, ' - ', 1) as dusun,
+           n.rt,
+           n.rw,
+           f.kk_number   as "kkNumber",
+           f.head_name   as "headName",
+           f.member_count as "memberCount"
+    from residents r
+    join neighborhoods n on n.id = r.neighborhood_id
+    join hamlets h on h.id = n.hamlet_id
+    left join families f on f.id = r.family_id
+    where r.id = ${residentId}
+    limit 1
+  `);
+  const profile = base.rows[0];
+  if (!profile) return null;
+
+  const requests = await db.execute<ResidentPortalRequest>(sql`
+    select lr.id,
+           lr.ticket,
+           lt.name        as "letterName",
+           lt.code        as "letterCode",
+           lr.status::text as status,
+           lr.priority::text as priority,
+           lr.purpose,
+           lr.submitted_at  as "submittedAt",
+           lr.due_at        as "dueAt",
+           lr.signed_at     as "signedAt",
+           lr.completed_at  as "completedAt",
+           lr.verification_code as "verificationCode",
+           sr.certificate_serial as "certificateSerial",
+           lr.agenda_number as "agendaNumber",
+           (lr.signed_at is not null
+             and lr.status::text in ('DITANDATANGANI','SIAP_DIAMBIL','SELESAI')) as downloadable
+    from letter_requests lr
+    join letter_types lt on lt.id = lr.letter_type_id
+    left join signature_requests sr on sr.request_id = lr.id and sr.status = 'DITANDATANGANI'
+    where lr.applicant_resident_id = ${residentId}
+    order by lr.submitted_at desc
+    limit 50
+  `);
+
+  return {
+    resident: profile,
+    family: profile.kkNumber
+      ? {
+          kkNumber: profile.kkNumber,
+          headName: profile.headName,
+          memberCount: profile.memberCount,
+        }
+      : null,
+    requests: requests.rows,
   };
 }

@@ -8,3 +8,9 @@ export function readEsignPassphrase() {
     isTrainingDefault: !(configured && configured.length >= 8),
   };
 }
+
+export function readEsignTrainingHint(): string | null {
+  if (process.env.NODE_ENV === "production") return null;
+  if (process.env.ESIGN_PASSPHRASE?.trim()) return null;
+  return ESIGN_TRAINING_PASSPHRASE;
+}

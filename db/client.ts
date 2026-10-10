@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { drizzle as drizzleNode } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
+import "dotenv/config";
 
 import * as schema from "./schema";
 
@@ -53,7 +54,7 @@ function buildPgliteDb(client: PgliteInstance) {
 
 export async function getDb() {
   if (globalForDb.__dvDb) return globalForDb.__dvDb;
-
+  console.log("Databanes Driver ",process.env.DATABASE_DRIVER)
   if (DATABASE_DRIVER === "postgres") {
     const url = process.env.DATABASE_URL;
     if (!url) {
