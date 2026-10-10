@@ -99,6 +99,8 @@ export const activityKindEnum = pgEnum("activity_kind", [
   "TANDA_TANGAN",
   "CETAK_SURAT",
   "MUTASI_PENDUDUK",
+  "PENDAFTARAN_PENDUDUK",
+  "LAPORAN_BARU",
   "PENGUMUMAN",
   "MASUK_LOG",
   "KELUAR_LOG",
@@ -610,6 +612,13 @@ export const citizenReports = pgTable(
     villageId: uuid("village_id")
       .notNull()
       .references(() => villages.id, { onDelete: "cascade" }),
+    /** Set when the report is filed through the resident portal; loket filings stay null. */
+    reporterResidentId: uuid("reporter_resident_id").references(
+      () => residents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     reporterName: varchar("reporter_name", { length: 120 }).notNull(),
     reporterNik: varchar("reporter_nik", { length: 16 }),
     reporterPhone: varchar("reporter_phone", { length: 32 }),
@@ -639,6 +648,10 @@ export const citizenReports = pgTable(
     index("citizen_reports_status_idx").on(
       t.villageId,
       t.status,
+      t.submittedAt,
+    ),
+    index("citizen_reports_reporter_idx").on(
+      t.reporterResidentId,
       t.submittedAt,
     ),
   ],
@@ -754,6 +767,41 @@ export const notifications = pgTable(
   ],
 );
 
+/**
+ * Per-resident read state for the portal notification feed.
+ *
+ * The feed itself is derived from `announcements` (status TERBIT / TERJADWAL
+ * yang sudah jatuh tempo), so publishing a broadcast never has to fan out one
+ * row per resident — a single read marker per resident per announcement is
+ * enough to drive the unread badge. Officer notifications live in
+ * `notifications` and are never mixed in here.
+ */
+export const residentAnnouncementReads = pgTable(
+  "resident_announcement_reads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    residentId: uuid("resident_id")
+      .notNull()
+      .references(() => residents.id, { onDelete: "cascade" }),
+    announcementId: uuid("announcement_id")
+      .notNull()
+      .references(() => announcements.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("resident_announcement_reads_uq").on(
+      t.residentId,
+      t.announcementId,
+    ),
+    index("resident_announcement_reads_village_idx").on(t.villageId),
+  ],
+);
+
 /** Rolling daily operational metrics — avoids full-table scans on the KPI row. */
 export const dailyStats = pgTable(
   "daily_stats",
@@ -853,6 +901,7 @@ export const residentsRelations = relations(residents, ({ one, many }) => ({
   }),
   mutations: many(residentMutations),
   requests: many(letterRequests),
+  reports: many(citizenReports),
 }));
 
 export const residentMutationsRelations = relations(
@@ -979,6 +1028,10 @@ export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
     fields: [citizenReports.villageId],
     references: [villages.id],
   }),
+  reporter: one(residents, {
+    fields: [citizenReports.reporterResidentId],
+    references: [residents.id],
+  }),
   neighborhood: one(neighborhoods, {
     fields: [citizenReports.neighborhoodId],
     references: [neighborhoods.id],
@@ -988,6 +1041,24 @@ export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
     references: [staff.id],
   }),
 }));
+
+export const residentAnnouncementReadsRelations = relations(
+  residentAnnouncementReads,
+  ({ one }) => ({
+    village: one(villages, {
+      fields: [residentAnnouncementReads.villageId],
+      references: [villages.id],
+    }),
+    resident: one(residents, {
+      fields: [residentAnnouncementReads.residentId],
+      references: [residents.id],
+    }),
+    announcement: one(announcements, {
+      fields: [residentAnnouncementReads.announcementId],
+      references: [announcements.id],
+    }),
+  }),
+);
 
 /* ==========================================================================
    INFERRED TYPES
@@ -999,7 +1070,9 @@ export type Neighborhood = typeof neighborhoods.$inferSelect;
 export type Staff = typeof staff.$inferSelect;
 export type StaffShift = typeof staffShifts.$inferSelect;
 export type Family = typeof families.$inferSelect;
+export type NewFamily = typeof families.$inferInsert;
 export type Resident = typeof residents.$inferSelect;
+export type NewResident = typeof residents.$inferInsert;
 export type ResidentMutation = typeof residentMutations.$inferSelect;
 export type LetterType = typeof letterTypes.$inferSelect;
 export type LetterRequirement = typeof letterRequirements.$inferSelect;
@@ -1008,10 +1081,13 @@ export type NewLetterRequest = typeof letterRequests.$inferInsert;
 export type LetterAttachment = typeof letterAttachments.$inferSelect;
 export type SignatureRequest = typeof signatureRequests.$inferSelect;
 export type CitizenReport = typeof citizenReports.$inferSelect;
+export type NewCitizenReport = typeof citizenReports.$inferInsert;
 export type Announcement = typeof announcements.$inferSelect;
 export type NewAnnouncement = typeof announcements.$inferInsert;
 export type ActivityLogEntry = typeof activityLog.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type ResidentAnnouncementRead =
+  typeof residentAnnouncementReads.$inferSelect;
 export type DailyStat = typeof dailyStats.$inferSelect;
 
 export type Session = typeof sessions.$inferSelect;

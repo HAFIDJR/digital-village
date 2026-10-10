@@ -1,6 +1,6 @@
 "use client";
 
-import { IdCard, MapPin, RefreshCw, Users, Venus } from "lucide-react";
+import { IdCard, KeyRound, MapPin, PieChart, RefreshCw, Users, UserPlus, Venus } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,16 +12,28 @@ import {
   REGISTRY_SORT_LABEL,
   RELIGION_LABEL,
   RESIDENT_STATUS,
+  ROLE_CAPABILITIES,
   TONE_CLASSES,
   welfareTone,
 } from "@/lib/domain";
 import { formatDate, formatKk, formatNik, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { errorMessage, useListRegistryQuery } from "@/store/api";
+import {
+  errorMessage,
+  useGetShellQuery,
+  useListRegistryQuery,
+} from "@/store/api";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { activeRegistryFilterCount, registryActions } from "@/store/registry-slice";
 import type { FamilyRow, ResidentRow } from "@/db/queries";
+import type { StaffRole } from "@/db/schema";
 import type { RegistryQuery } from "@/lib/validators";
+
+import { FamilyFormDialog } from "./registry/family-form-dialog";
+import { FamilyReport } from "./registry/family-report";
+import { ResidentAccountDialog } from "./registry/resident-account-dialog";
+import type { ResidentAccountTarget } from "./registry/resident-account-dialog";
+import { ResidentFormDialog } from "./registry/resident-form-dialog";
 
 import { QueryErrorState } from "./feedback";
 import {
@@ -68,6 +80,21 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
   );
 
   const { data, isLoading, isFetching, isError, error, refetch } = useListRegistryQuery(queryArgs);
+  const shell = useGetShellQuery();
+
+  const [residentFormOpen, setResidentFormOpen] = React.useState(false);
+  const [familyFormOpen, setFamilyFormOpen] = React.useState(false);
+  const [accountTarget, setAccountTarget] = React.useState<ResidentAccountTarget | null>(null);
+  const [reportOpen, setReportOpen] = React.useState(false);
+  // Remounting the dialogs on open starts them from a clean form; that keeps
+  // the reset out of an effect (React 19 flags synchronous setState there).
+  const [formNonce, setFormNonce] = React.useState(0);
+
+  // Client-side mirror of the server guard: the buttons only render for roles
+  // that actually hold `manageRegistry`.
+  const canManageRegistry = shell.data?.officer
+    ? (ROLE_CAPABILITIES[shell.data.officer.role as StaffRole]?.manageRegistry ?? false)
+    : false;
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -137,6 +164,31 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
               <RefreshCw className={cn(isFetching && "animate-spin")} aria-hidden />
               Segarkan
             </Button>
+            {canManageRegistry ? (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setFormNonce((nonce) => nonce + 1);
+                  if (isResidents) setResidentFormOpen(true);
+                  else setFamilyFormOpen(true);
+                }}
+              >
+                {isResidents ? <UserPlus aria-hidden /> : <Users aria-hidden />}
+                {isResidents ? "Tambah Penduduk" : "Tambah Kartu Keluarga"}
+              </Button>
+            ) : null}
+            {!isResidents ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setReportOpen((open) => !open)}
+                aria-expanded={reportOpen}
+              >
+                <PieChart aria-hidden />
+                {reportOpen ? "Sembunyikan laporan" : "Laporan KK"}
+              </Button>
+            ) : null}
           </>
         }
       />
@@ -172,6 +224,8 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
           icon={MapPin}
         />
       </StatStrip>
+
+      {!isResidents && reportOpen ? <FamilyReport /> : null}
 
       <Panel className="min-w-0">
         <PanelHeader
@@ -244,6 +298,8 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
           <ResidentTable
             rows={(data?.rows as ResidentRow[] | undefined) ?? []}
             loading={isLoading || (isFetching && !data?.rows.length)}
+            canManageRegistry={canManageRegistry}
+            onCreateAccount={setAccountTarget}
           />
         ) : (
           <FamilyTable
@@ -274,6 +330,25 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
           </span>
         </div>
       </Panel>
+
+      <ResidentFormDialog
+        key={`resident-${formNonce}`}
+        open={residentFormOpen}
+        onOpenChange={setResidentFormOpen}
+      />
+      <FamilyFormDialog
+        key={`family-${formNonce}`}
+        open={familyFormOpen}
+        onOpenChange={setFamilyFormOpen}
+      />
+      <ResidentAccountDialog
+        key={`account-${accountTarget?.id ?? "none"}`}
+        resident={accountTarget}
+        open={accountTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setAccountTarget(null);
+        }}
+      />
     </>
   );
 }
@@ -285,9 +360,20 @@ const RESIDENT_COLUMNS = [
   { key: "education", label: "Pendidikan & Pekerjaan", width: "w-[210px]" },
   { key: "area", label: "Alamat", width: "w-[210px]" },
   { key: "status", label: "Status", width: "w-[140px]" },
+  { key: "actions", label: "Akun Portal", width: "w-[150px]" },
 ] as const;
 
-function ResidentTable({ rows, loading }: { rows: ResidentRow[]; loading: boolean }) {
+function ResidentTable({
+  rows,
+  loading,
+  canManageRegistry,
+  onCreateAccount,
+}: {
+  rows: ResidentRow[];
+  loading: boolean;
+  canManageRegistry: boolean;
+  onCreateAccount: (resident: ResidentAccountTarget) => void;
+}) {
   return (
     <TableFrame caption="Registrasi penduduk desa" minWidthClass="min-w-[1070px]" busy={loading}>
       <thead>
@@ -385,6 +471,30 @@ function ResidentTable({ rows, loading }: { rows: ResidentRow[]; loading: boolea
                       {RELIGION_LABEL[row.religion] ?? row.religion}
                     </span>
                   </div>
+                </td>
+                <td className={TD_CLASS}>
+                  {row.hasAccount ? (
+                    <Badge variant="approved" size="sm">
+                      Akun aktif
+                    </Badge>
+                  ) : canManageRegistry ? (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() =>
+                        onCreateAccount({
+                          id: row.id,
+                          nik: row.nik,
+                          fullName: row.fullName,
+                        })
+                      }
+                    >
+                      <KeyRound aria-hidden />
+                      Buat akun
+                    </Button>
+                  ) : (
+                    <span className="text-[10px] text-fg-subtle">Belum ada</span>
+                  )}
                 </td>
               </tr>
             );

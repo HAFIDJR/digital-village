@@ -15,10 +15,10 @@ async function main() {
     const result = await seedDatabase({ reset });
     if (result.skipped) {
       console.log(`[seed] skipped — ${result.reason}. Use --reset to rebuild.`);
-      console.log(`[seed] Desa Sukamaju populated in ${result.durationMs}ms`);
-      console.table(result.counts);
       return;
     }
+    console.log(`[seed] Desa Sukamaju populated in ${result.durationMs}ms`);
+    console.table(result.counts);
   } catch (error) {
     console.error("[seed] error:", error);
 

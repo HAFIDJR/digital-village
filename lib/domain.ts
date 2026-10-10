@@ -157,6 +157,8 @@ export const ACTIVITY_KIND: Record<
   TANDA_TANGAN: { label: "Tanda Tangan", tone: "approved" },
   CETAK_SURAT: { label: "Cetak Surat", tone: "neutral" },
   MUTASI_PENDUDUK: { label: "Mutasi Penduduk", tone: "neutral" },
+  PENDAFTARAN_PENDUDUK: { label: "Pendaftaran Penduduk", tone: "progress" },
+  LAPORAN_BARU: { label: "Laporan Baru", tone: "pending" },
   PENGUMUMAN: { label: "Pengumuman", tone: "progress" },
   MASUK_LOG: { label: "Masuk Sistem", tone: "progress" },
   KELUAR_LOG: { label: "Keluar Sistem", tone: "neutral" },
@@ -290,6 +292,18 @@ export const NOTIFICATION_SEVERITY: Record<
   CRITICAL: { label: "Kritis", tone: "rejected" },
 };
 
+/**
+ * Village-wide `priority` mapped onto the notification severity scale both
+ * feeds colour by: DARURAT → CRITICAL, PRIORITAS → WARNING, otherwise INFO.
+ */
+export function notificationSeverity(
+  priority: string | null | undefined,
+): "INFO" | "WARNING" | "CRITICAL" {
+  if (priority === "DARURAT") return "CRITICAL";
+  if (priority === "PRIORITAS") return "WARNING";
+  return "INFO";
+}
+
 export const REQUEST_CHANNEL: Record<string, string> = {
   WEBSITE: "Website Desa",
   LOKET: "Loket Pelayanan",
@@ -388,6 +402,36 @@ export const RESIDENT_STATUS_ORDER = [
   "TIDAK_DIKENAL",
 ] as const;
 
+/** Tingkat pendidikan terakhir, as recorded on the KTP / kartu keluarga. */
+export const EDUCATION_LEVEL: Record<string, string> = {
+  "Tidak/Belum Sekolah": "Tidak/Belum Sekolah",
+  "SD/Sederajat": "SD/Sederajat",
+  "SMP/Sederajat": "SMP/Sederajat",
+  "SMA/SMK/Sederajat": "SMA/SMK/Sederajat",
+  "D1/D2/D3": "D1/D2/D3",
+  "S1/D4": "S1/D4",
+  "S2/S3": "S2/S3",
+};
+
+export const EDUCATION_LEVEL_ORDER = Object.keys(EDUCATION_LEVEL);
+
+/** Status hubungan dalam kartu keluarga (`residents.familyRelation`). */
+export const FAMILY_RELATION: Record<string, string> = {
+  "KEPALA KELUARGA": "Kepala Keluarga",
+  ISTRI: "Istri",
+  SUAMI: "Suami",
+  ANAK: "Anak",
+  MENANTU: "Menantu",
+  CUCU: "Cucu",
+  ORANG_TUA: "Orang Tua",
+  MERTUA: "Mertua",
+  FAMILI_LAIN: "Famili Lain",
+  PEMBANTU: "Pembantu",
+  LAINNYA: "Lainnya",
+};
+
+export const FAMILY_RELATION_ORDER = Object.keys(FAMILY_RELATION);
+
 /** Ekonomi stratum recorded for social-assistance mapping. */
 export const WELFARE_CLASS_TONE: Record<string, Tone> = {
   "Pra-Sejahtera": "rejected",
@@ -396,6 +440,8 @@ export const WELFARE_CLASS_TONE: Record<string, Tone> = {
   "Sejahtera III": "approved",
   "Sejahtera III Plus": "approved",
 };
+
+export const WELFARE_CLASS_ORDER = Object.keys(WELFARE_CLASS_TONE);
 
 export function welfareTone(value: string | null | undefined): Tone {
   if (!value) return "neutral";

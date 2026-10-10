@@ -5,6 +5,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { getDb } from "./client";
 import { getSessionId } from "@/lib/auth/session";
 import { readEsignTrainingHint } from "@/lib/esign";
+import { ATTACHMENT_KEY_PREFIX } from "@/lib/attachments";
 import type { QueueQuery, RegistryQuery, ReportQuery } from "@/lib/validators";
 
 export type VillageProfile = {
@@ -109,6 +110,12 @@ export type AttachmentView = {
   defectNote: string | null;
   uploadedAt: string;
   verifiedByName: string | null;
+  /**
+   * True when the scan was uploaded through the API and can be streamed back.
+   * Seeded demo rows carry an object-store key with no bytes behind it, so the
+   * review drawer falls back to its placeholder for those.
+   */
+  stored: boolean;
 };
 
 export type RequestDetail = {
@@ -824,7 +831,8 @@ export async function getRequestDetail(
              a.status::text as status,
              a.defect_note  as "defectNote",
              a.uploaded_at  as "uploadedAt",
-             vs.full_name   as "verifiedByName"
+             vs.full_name   as "verifiedByName",
+             (a.storage_key like ${`${ATTACHMENT_KEY_PREFIX}/%`}) as stored
       from letter_attachments a
       left join staff vs on vs.id = a.verified_by_staff_id
       where a.request_id = ${requestId}
@@ -977,6 +985,46 @@ export async function getRequestDetail(
       : null,
     timeline: timelineResult.rows,
   };
+}
+
+export type AttachmentFileView = {
+  id: string;
+  requestId: string;
+  docKey: string;
+  label: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storageKey: string;
+};
+
+/**
+ * The one row needed to stream an uploaded scan back to the verifying officer.
+ * The `storage_key` never leaves the server — only the bytes do.
+ */
+export async function getAttachmentFile(
+  villageId: string,
+  requestId: string,
+  attachmentId: string,
+): Promise<AttachmentFileView | null> {
+  const db = await getDb();
+  const result = await db.execute<AttachmentFileView>(sql`
+    select a.id,
+           a.request_id   as "requestId",
+           a.doc_key      as "docKey",
+           a.label,
+           a.file_name    as "fileName",
+           a.mime_type    as "mimeType",
+           a.size_bytes   as "sizeBytes",
+           a.storage_key  as "storageKey"
+    from letter_attachments a
+    join letter_requests lr on lr.id = a.request_id
+    where a.id = ${attachmentId}
+      and a.request_id = ${requestId}
+      and lr.village_id = ${villageId}
+    limit 1
+  `);
+  return result.rows[0] ?? null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1513,6 +1561,8 @@ export type ResidentRow = {
   phone: string | null;
   status: string;
   documentsVerified: boolean;
+  /** Whether a portal login has been provisioned for this resident. */
+  hasAccount: boolean;
 };
 
 export type FamilyRow = {
@@ -1630,11 +1680,13 @@ export async function listResidents(
              r.address,
              r.phone,
              r.status,
-             r.documents_verified as "documentsVerified"
+             r.documents_verified as "documentsVerified",
+             (ra.id is not null) as "hasAccount"
       from residents r
       join neighborhoods n on n.id = r.neighborhood_id
       join hamlets h on h.id = n.hamlet_id
       left join families f on f.id = r.family_id
+      left join resident_accounts ra on ra.resident_id = r.id
       where ${filter}
       order by ${registryOrder(query.sort)}
       limit ${query.pageSize} offset ${offset}
@@ -2259,12 +2311,18 @@ export type ResidentPortalData = {
     dusun: string;
     rt: number;
     rw: number;
+    neighborhoodId: string;
   };
   family: { kkNumber: string | null; headName: string | null; memberCount: number | null } | null;
   requests: ResidentPortalRequest[];
+  /** Laporan/aspirasi filed by this resident, newest first. */
+  reports: ResidentReportEntry[];
 };
 
 export async function getResidentPortalData(residentId: string): Promise<ResidentPortalData | null> {
+  const village = await getVillageProfile();
+  if (!village) return null;
+
   const db = await getDb();
   const base = await db.execute<{
     fullName: string;
@@ -2274,6 +2332,7 @@ export async function getResidentPortalData(residentId: string): Promise<Residen
     dusun: string;
     rt: number;
     rw: number;
+    neighborhoodId: string;
     kkNumber: string | null;
     headName: string | null;
     memberCount: number | null;
@@ -2285,6 +2344,7 @@ export async function getResidentPortalData(residentId: string): Promise<Residen
            split_part(h.name, ' - ', 1) as dusun,
            n.rt,
            n.rw,
+           r.neighborhood_id as "neighborhoodId",
            f.kk_number   as "kkNumber",
            f.head_name   as "headName",
            f.member_count as "memberCount"
@@ -2298,7 +2358,55 @@ export async function getResidentPortalData(residentId: string): Promise<Residen
   const profile = base.rows[0];
   if (!profile) return null;
 
-  const requests = await db.execute<ResidentPortalRequest>(sql`
+  const [requests, reports] = await Promise.all([
+    listResidentRequests(residentId),
+    listResidentReports(village.id, residentId),
+  ]);
+
+
+
+  return {
+    resident: profile,
+    family: profile.kkNumber
+      ? {
+          kkNumber: profile.kkNumber,
+          headName: profile.headName,
+          memberCount: profile.memberCount,
+        }
+      : null,
+    requests,
+    reports,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resident portal reads (route: /warga)                                        */
+/* -------------------------------------------------------------------------- */
+
+export type ResidentReportEntry = {
+  id: string;
+  ticket: string;
+  category: string;
+  subject: string;
+  body: string;
+  status: string;
+  priority: string;
+  dusun: string | null;
+  rt: number | null;
+  rw: number | null;
+  handledByName: string | null;
+  responseCount: number;
+  submittedAt: string;
+  resolvedAt: string | null;
+};
+
+/** The resident's own letter queue, newest first — the portal's live list. */
+export async function listResidentRequests(
+  residentId: string,
+  limit = 50,
+): Promise<ResidentPortalRequest[]> {
+  const db = await getDb();
+  const result = await db.execute<ResidentPortalRequest>(sql`
     select lr.id,
            lr.ticket,
            lt.name        as "letterName",
@@ -2320,18 +2428,304 @@ export async function getResidentPortalData(residentId: string): Promise<Residen
     left join signature_requests sr on sr.request_id = lr.id and sr.status = 'DITANDATANGANI'
     where lr.applicant_resident_id = ${residentId}
     order by lr.submitted_at desc
-    limit 50
+    limit ${limit}
+  `);
+  return result.rows;
+}
+
+/** The "Laporan Saya" list: everything this resident has filed, newest first. */
+export async function listResidentReports(
+  villageId: string,
+  residentId: string,
+  limit = 50,
+): Promise<ResidentReportEntry[]> {
+  const db = await getDb();
+  const result = await db.execute<ResidentReportEntry>(sql`
+    select cr.id,
+           cr.ticket,
+           cr.category,
+           cr.subject,
+           cr.body,
+           cr.status,
+           cr.priority::text as priority,
+           split_part(h.name, ' - ', 1) as dusun,
+           n.rt,
+           n.rw,
+           st.full_name      as "handledByName",
+           cr.response_count as "responseCount",
+           cr.submitted_at   as "submittedAt",
+           cr.resolved_at    as "resolvedAt"
+    from citizen_reports cr
+    left join neighborhoods n on n.id = cr.neighborhood_id
+    left join hamlets h on h.id = n.hamlet_id
+    left join staff st on st.id = cr.handled_by_staff_id
+    where cr.village_id = ${villageId}
+      and cr.reporter_resident_id = ${residentId}
+    order by cr.submitted_at desc
+    limit ${limit}
+  `);
+  return result.rows;
+}
+
+export type ResidentAnnouncementEntry = {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string | null;
+  body: string;
+  channel: string;
+  priority: string;
+  /** Derived from `priority`: INFO | WARNING | CRITICAL. */
+  severity: string;
+  pinned: boolean;
+  audience: string;
+  authorName: string | null;
+  publishAt: string | null;
+  createdAt: string;
+  readAt: string | null;
+};
+
+export type ResidentAnnouncementFeed = {
+  announcements: ResidentAnnouncementEntry[];
+  unread: number;
+  serverTime: string;
+};
+
+/**
+ * The resident-facing broadcast feed.
+ *
+ * Derived straight from `announcements`, so publishing needs no per-resident
+ * fan-out: only TERBIT items — plus TERJADWAL ones whose publish date has
+ * arrived — and nothing past its expiry ever reaches a resident. Read state
+ * comes from `resident_announcement_reads`.
+ */
+export async function listResidentAnnouncements(
+  villageId: string,
+  residentId: string,
+  options: { since?: Date | string | null; limit?: number } = {},
+): Promise<ResidentAnnouncementFeed> {
+  const db = await getDb();
+  const limit = options.limit ?? 40;
+  const since = options.since ? new Date(options.since) : null;
+
+  const result = await db.execute<ResidentAnnouncementEntry>(sql`
+    select a.id,
+           a.title,
+           a.slug,
+           a.excerpt,
+           a.body,
+           a.channel::text  as channel,
+           a.priority::text as priority,
+           case a.priority::text
+             when 'DARURAT' then 'CRITICAL'
+             when 'PRIORITAS' then 'WARNING'
+             else 'INFO'
+           end              as severity,
+           a.pinned,
+           a.audience,
+           st.full_name     as "authorName",
+           coalesce(a.publish_at, a.created_at) as "publishAt",
+           a.created_at     as "createdAt",
+           rad.read_at      as "readAt"
+    from announcements a
+    left join staff st on st.id = a.author_staff_id
+    left join resident_announcement_reads rad
+      on rad.announcement_id = a.id and rad.resident_id = ${residentId}
+    where a.village_id = ${villageId}
+      and (
+        a.status::text = 'TERBIT'
+        or (a.status::text = 'TERJADWAL' and a.publish_at is not null and a.publish_at <= now())
+      )
+      and (a.expires_at is null or a.expires_at > now())
+      ${since ? sql`and coalesce(a.publish_at, a.created_at) >= ${since}` : sql``}
+    order by a.pinned desc, coalesce(a.publish_at, a.created_at) desc
+    limit ${limit}
   `);
 
+  const announcements = result.rows;
   return {
-    resident: profile,
-    family: profile.kkNumber
-      ? {
-          kkNumber: profile.kkNumber,
-          headName: profile.headName,
-          memberCount: profile.memberCount,
-        }
-      : null,
-    requests: requests.rows,
+    announcements,
+    unread: announcements.filter((row) => row.readAt === null).length,
+    serverTime: new Date().toISOString(),
+  };
+}
+
+export type ResidentLetterRequirement = {
+  docKey: string;
+  label: string;
+  mandatory: boolean;
+};
+
+export type ResidentLetterType = {
+  id: string;
+  code: string;
+  name: string;
+  templateTitle: string;
+  description: string | null;
+  slaDays: number;
+  feeIdr: number;
+  requirements: ResidentLetterRequirement[];
+};
+
+/** The service catalogue as the portal shows it: what to file and what to scan. */
+export async function listResidentLetterTypes(
+  villageId: string,
+): Promise<ResidentLetterType[]> {
+  const db = await getDb();
+
+  const [types, requirements] = await Promise.all([
+    db.execute<Omit<ResidentLetterType, "requirements">>(sql`
+      select lt.id,
+             lt.code,
+             lt.name,
+             lt.template_title as "templateTitle",
+             lt.description,
+             lt.sla_days       as "slaDays",
+             lt.fee_idr        as "feeIdr"
+      from letter_types lt
+      where lt.village_id = ${villageId} and lt.active
+      order by lt.sort_order, lt.name
+    `),
+    db.execute<ResidentLetterRequirement & { letterTypeId: string }>(sql`
+      select lreq.letter_type_id as "letterTypeId",
+             lreq.doc_key        as "docKey",
+             lreq.label,
+             lreq.mandatory
+      from letter_requirements lreq
+      join letter_types lt on lt.id = lreq.letter_type_id
+      where lt.village_id = ${villageId} and lt.active
+      order by lreq.sort_order, lreq.label
+    `),
+  ]);
+
+  const byType = new Map<string, ResidentLetterRequirement[]>();
+  for (const row of requirements.rows) {
+    const list = byType.get(row.letterTypeId) ?? [];
+    list.push({ docKey: row.docKey, label: row.label, mandatory: row.mandatory });
+    byType.set(row.letterTypeId, list);
+  }
+
+  return types.rows.map((type) => ({
+    ...type,
+    requirements: byType.get(type.id) ?? [],
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Kartu Keluarga report (route: /keluarga)                                     */
+/* -------------------------------------------------------------------------- */
+
+export type FamilyReport = {
+  totals: {
+    families: number;
+    members: number;
+    withoutMembers: number;
+    largestFamilySize: number;
+    averageMembers: number | null;
+  };
+  welfareBreakdown: { welfareClass: string; families: number; members: number }[];
+  sizeBreakdown: { bucket: string; families: number }[];
+  dusunBreakdown: { code: string; name: string; families: number; members: number }[];
+  largestFamilies: {
+    id: string;
+    kkNumber: string;
+    headName: string;
+    memberCount: number;
+    welfareClass: string | null;
+    dusun: string;
+    rt: number;
+    rw: number;
+  }[];
+};
+
+/**
+ * Roll-up behind the Kartu Keluarga report: how many members each KK carries,
+ * the welfare-class spread used for social-assistance mapping, and the same
+ * figures per dusun.
+ */
+export async function getFamilyReport(villageId: string): Promise<FamilyReport> {
+  const db = await getDb();
+
+  const [totalsResult, welfareResult, sizeResult, dusunResult, largestResult] =
+    await Promise.all([
+      db.execute<FamilyReport["totals"]>(sql`
+        select count(*)::int                                              as families,
+               coalesce(sum(f.member_count), 0)::int                      as members,
+               count(*) filter (where f.member_count = 0)::int            as "withoutMembers",
+               coalesce(max(f.member_count), 0)::int                      as "largestFamilySize",
+               round(avg(f.member_count), 1)::float8                      as "averageMembers"
+        from families f
+        where f.village_id = ${villageId}
+      `),
+
+      db.execute<{ welfareClass: string; families: number; members: number }>(sql`
+        select coalesce(f.welfare_class, 'Tidak Tercatat') as "welfareClass",
+               count(*)::int                               as families,
+               coalesce(sum(f.member_count), 0)::int       as members
+        from families f
+        where f.village_id = ${villageId}
+        group by 1
+        order by 1
+      `),
+
+      db.execute<{ bucket: string; families: number }>(sql`
+        select case
+                 when f.member_count <= 1 then '1 anggota'
+                 when f.member_count <= 3 then '2–3 anggota'
+                 when f.member_count <= 5 then '4–5 anggota'
+                 else '6 anggota atau lebih'
+               end as bucket,
+               count(*)::int as families
+        from families f
+        where f.village_id = ${villageId}
+        group by 1
+        order by min(f.member_count)
+      `),
+
+      db.execute<{ code: string; name: string; families: number; members: number }>(sql`
+        select h.code,
+               split_part(h.name, ' - ', 1)          as name,
+               count(f.id)::int                      as families,
+               coalesce(sum(f.member_count), 0)::int as members
+        from hamlets h
+        left join neighborhoods n on n.hamlet_id = h.id
+        left join families f on f.neighborhood_id = n.id
+        where h.village_id = ${villageId}
+        group by 1, 2
+        order by 1
+      `),
+
+      db.execute<FamilyReport["largestFamilies"][number]>(sql`
+        select f.id,
+               f.kk_number     as "kkNumber",
+               f.head_name     as "headName",
+               f.member_count  as "memberCount",
+               f.welfare_class as "welfareClass",
+               split_part(h.name, ' - ', 1) as dusun,
+               n.rt,
+               n.rw
+        from families f
+        join neighborhoods n on n.id = f.neighborhood_id
+        join hamlets h on h.id = n.hamlet_id
+        where f.village_id = ${villageId}
+        order by f.member_count desc, f.head_name asc
+        limit 8
+      `),
+    ]);
+
+  const totals = totalsResult.rows[0] ?? {
+    families: 0,
+    members: 0,
+    withoutMembers: 0,
+    largestFamilySize: 0,
+    averageMembers: null,
+  };
+
+  return {
+    totals,
+    welfareBreakdown: welfareResult.rows,
+    sizeBreakdown: sizeResult.rows,
+    dusunBreakdown: dusunResult.rows,
+    largestFamilies: largestResult.rows,
   };
 }

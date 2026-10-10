@@ -4,8 +4,25 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { getDb } from "./client";
 import * as t from "./schema";
-import type { AnnouncementDraft, VerifyRequestInput } from "@/lib/validators";
-import { REQUEST_STATUS } from "@/lib/domain";
+import type {
+  AnnouncementDraft,
+  FamilyDraft,
+  LetterAttachmentManifest,
+  LetterRequestDraft,
+  ReportDraft,
+  ResidentAccountDraft,
+  ResidentDraft,
+  ResidentUpdate,
+  VerifyRequestInput,
+} from "@/lib/validators";
+import {
+  MUTATION_KIND,
+  REPORT_CATEGORY,
+  REPORT_STATUS,
+  REQUEST_STATUS,
+  notificationSeverity,
+} from "@/lib/domain";
+import { initialsOf } from "@/lib/format";
 import { verifyPassword } from "@/lib/auth/password";
 import { hashPassword } from "@/lib/auth/password";
 import {
@@ -39,6 +56,101 @@ function generateVerificationCode() {
     out += TICKET_ALPHABET[Math.floor(Math.random() * TICKET_ALPHABET.length)];
   }
   return out;
+}
+
+/** Tickets start above the seeded block so demo data and live filings never collide. */
+const TICKET_BASE = 1000;
+
+/**
+ * Next human reference in the "SRT-1049" series: the highest number already
+ * issued for the prefix plus one. The unique index on `ticket` is the final
+ * guard — this only keeps the sequence readable.
+ */
+async function nextTicket(
+  tx: DbOrTx,
+  table: "letter_requests" | "citizen_reports",
+  prefix: "SRT" | "LPR",
+): Promise<string> {
+  const result = await tx.execute<{ next: number }>(sql`
+    select coalesce(max(nullif(substring(ticket from '[0-9]+$'), '')::int), ${TICKET_BASE}) + 1 as next
+    from ${sql.raw(table)}
+    where ticket like ${`${prefix}-%`}
+  `);
+  return `${prefix}-${result.rows[0]?.next ?? TICKET_BASE + 1}`;
+}
+
+/** Agenda number from the village registry book, continued monotonically. */
+async function nextAgendaNumber(tx: DbOrTx): Promise<number> {
+  const result = await tx.execute<{ next: number }>(sql`
+    select coalesce(max(agenda_number), 400) + 1 as next from letter_requests
+  `);
+  return result.rows[0]?.next ?? 401;
+}
+
+async function loadResident(tx: DbOrTx, villageId: string, residentId: string) {
+  const [row] = await tx
+    .select()
+    .from(t.residents)
+    .where(and(eq(t.residents.id, residentId), eq(t.residents.villageId, villageId)))
+    .limit(1);
+  if (!row) throw new DomainError("Penduduk tidak ditemukan", "RESIDENT_NOT_FOUND", 404);
+  return row;
+}
+
+/** Guards against a neighbourhood uuid belonging to another village. */
+async function loadNeighborhood(tx: DbOrTx, villageId: string, neighborhoodId: string) {
+  const [row] = await tx
+    .select({
+      id: t.neighborhoods.id,
+      rt: t.neighborhoods.rt,
+      rw: t.neighborhoods.rw,
+      hamletId: t.neighborhoods.hamletId,
+      hamletName: t.hamlets.name,
+    })
+    .from(t.neighborhoods)
+    .innerJoin(t.hamlets, eq(t.hamlets.id, t.neighborhoods.hamletId))
+    .where(and(eq(t.neighborhoods.id, neighborhoodId), eq(t.hamlets.villageId, villageId)))
+    .limit(1);
+  if (!row) throw new DomainError("Wilayah RT/RW tidak ditemukan", "NEIGHBORHOOD_NOT_FOUND", 404);
+  return row;
+}
+
+async function loadFamily(tx: DbOrTx, villageId: string, familyId: string) {
+  const [row] = await tx
+    .select()
+    .from(t.families)
+    .where(and(eq(t.families.id, familyId), eq(t.families.villageId, villageId)))
+    .limit(1);
+  if (!row) throw new DomainError("Kartu keluarga tidak ditemukan", "FAMILY_NOT_FOUND", 404);
+  return row;
+}
+
+/** Keeps `families.member_count` truthful after members are added or removed. */
+async function syncFamilyMemberCount(tx: DbOrTx, familyId: string) {
+  await tx
+    .update(t.families)
+    .set({
+      memberCount: sql`(select count(*)::int from residents
+                          where family_id = ${familyId} and status = 'AKTIF')`,
+      updatedAt: new Date(),
+    })
+    .where(eq(t.families.id, familyId));
+}
+
+/** Broadcast to every officer in the village (`recipient_staff_id` stays NULL). */
+async function notifyOfficers(
+  tx: DbOrTx,
+  villageId: string,
+  entry: { title: string; body: string; severity: string; href: string },
+) {
+  await tx.insert(t.notifications).values({
+    villageId,
+    recipientStaffId: null,
+    title: entry.title,
+    body: entry.body,
+    severity: entry.severity,
+    href: entry.href,
+  });
 }
 
 /** Structured audit entry — the shape every mutation writes. */
@@ -678,6 +790,177 @@ export async function recordResidentDownload(input: {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Online letter submissions (portal warga → antrean loket)                     */
+/* -------------------------------------------------------------------------- */
+
+/** An upload the route has already persisted; only the server knows the key. */
+type StoredLetterAttachment = LetterAttachmentManifest & { storageKey: string };
+
+/**
+ * Files a resident through the portal and drops the request straight into the
+ * officer queue as `PENDING_VERIFIKASI` with its SLA countdown already running.
+ */
+export async function createLetterRequest(input: {
+  villageId: string;
+  residentId: string;
+  draft: LetterRequestDraft & { attachments: StoredLetterAttachment[] };
+  /**
+   * Id the caller already reserved — the route needs it up front so the uploaded
+   * scans can be stored under `requests/<id>/…` before the row is written.
+   */
+  requestId?: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+    if (resident.status !== "AKTIF") {
+      throw new DomainError(
+        "Akun penduduk tidak berstatus aktif. Hubungi kantor desa untuk pemutakhiran data.",
+        "RESIDENT_INACTIVE",
+        409,
+      );
+    }
+
+    const [letterType] = await tx
+      .select()
+      .from(t.letterTypes)
+      .where(
+        and(
+          eq(t.letterTypes.id, input.draft.letterTypeId),
+          eq(t.letterTypes.villageId, input.villageId),
+          eq(t.letterTypes.active, true),
+        ),
+      )
+      .limit(1);
+    if (!letterType) {
+      throw new DomainError(
+        "Jenis surat tidak tersedia atau sudah tidak dilayani.",
+        "LETTER_TYPE_NOT_FOUND",
+        404,
+      );
+    }
+
+    const requirements = await tx
+      .select()
+      .from(t.letterRequirements)
+      .where(eq(t.letterRequirements.letterTypeId, letterType.id))
+      .orderBy(t.letterRequirements.sortOrder);
+
+    const allowed = new Map(requirements.map((req) => [req.docKey, req]));
+
+    // Reject unknown document keys and duplicated uploads for the same key.
+    const seen = new Set<string>();
+    for (const file of input.draft.attachments) {
+      if (!allowed.has(file.docKey)) {
+        throw new DomainError(
+          `Berkas "${file.docKey}" bukan persyaratan untuk ${letterType.name}.`,
+          "UNKNOWN_ATTACHMENT",
+          422,
+        );
+      }
+      if (seen.has(file.docKey)) {
+        throw new DomainError(
+          `Berkas ${allowed.get(file.docKey)?.label ?? file.docKey} diunggah lebih dari satu kali.`,
+          "DUPLICATE_ATTACHMENT",
+          422,
+        );
+      }
+      seen.add(file.docKey);
+    }
+
+    const missing = requirements.filter(
+      (req) => req.mandatory && !seen.has(req.docKey),
+    );
+    if (missing.length) {
+      throw new DomainError(
+        `Berkas wajib belum diunggah: ${missing.map((req) => req.label).join(", ")}.`,
+        "ATTACHMENTS_REQUIRED",
+        422,
+      );
+    }
+
+    const neighborhood = await loadNeighborhood(
+      tx,
+      input.villageId,
+      resident.neighborhoodId,
+    );
+
+    const ticket = await nextTicket(tx, "letter_requests", "SRT");
+    const submittedAt = new Date();
+    const [request] = await tx
+      .insert(t.letterRequests)
+      .values({
+        ...(input.requestId ? { id: input.requestId } : {}),
+        ticket,
+        villageId: input.villageId,
+        letterTypeId: letterType.id,
+        applicantResidentId: resident.id,
+        applicantName: resident.fullName,
+        applicantNik: resident.nik,
+        applicantPhone: resident.phone,
+        familyId: resident.familyId,
+        neighborhoodId: neighborhood.id,
+        address: resident.address,
+        purpose: input.draft.purpose,
+        payload: input.draft.payload,
+        status: "PENDING_VERIFIKASI",
+        priority: "NORMAL",
+        channel: input.draft.channel,
+        documentsUploaded: input.draft.attachments.length,
+        documentsRequired: requirements.length,
+        submittedAt,
+        dueAt: new Date(submittedAt.getTime() + letterType.slaDays * 86_400_000),
+        verificationCode: generateVerificationCode(),
+        agendaNumber: await nextAgendaNumber(tx),
+      })
+      .returning();
+
+    for (const file of input.draft.attachments) {
+      await tx.insert(t.letterAttachments).values({
+        requestId: request.id,
+        docKey: file.docKey,
+        label: allowed.get(file.docKey)?.label ?? file.docKey,
+        fileName: file.fileName,
+        storageKey: file.storageKey,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        uploadedAt: submittedAt,
+      });
+    }
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGAJUAN_BARU",
+      summary: `${resident.fullName} mengajukan ${letterType.name} melalui portal warga dengan nomor ${ticket}.`,
+      subjectType: "letter_request",
+      subjectId: request.id,
+      subjectRef: ticket,
+      actor: {
+        id: null,
+        name: resident.fullName,
+        initials: initialsOf(resident.fullName) || "W",
+        role: "Warga (Portal)",
+      },
+      meta: {
+        channel: input.draft.channel,
+        letterType: letterType.code,
+        documents: `${input.draft.attachments.length}/${requirements.length}`,
+        slaDays: letterType.slaDays,
+      },
+    });
+
+    await notifyOfficers(tx, input.villageId, {
+      title: `${ticket} menunggu verifikasi`,
+      body: `${letterType.name} diajukan ${resident.fullName} (${neighborhood.hamletName} · RT ${neighborhood.rt}/RW ${neighborhood.rw}).`,
+      severity: "INFO",
+      href: "/antrean",
+    });
+
+    return request;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
 /* Announcements                                                               */
 /* -------------------------------------------------------------------------- */
 
@@ -790,9 +1073,179 @@ export async function markNotificationsRead(villageId: string, staffId: string, 
   });
 }
 
+/**
+ * Marks portal announcements as read for one resident. Read state is stored
+ * per resident/announcement, so a broadcast that arrives later is unread again.
+ */
+export async function markResidentAnnouncementsRead(input: {
+  villageId: string;
+  residentId: string;
+  announcementIds?: string[];
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    const rows = input.announcementIds?.length
+      ? await tx
+          .select({ id: t.announcements.id })
+          .from(t.announcements)
+          .where(
+            and(
+              eq(t.announcements.villageId, input.villageId),
+              inArray(t.announcements.id, input.announcementIds),
+            ),
+          )
+      : await tx
+          .select({ id: t.announcements.id })
+          .from(t.announcements)
+          .where(eq(t.announcements.villageId, input.villageId));
+
+    const ids = rows.map((row) => row.id);
+    if (!ids.length) return { updated: 0 };
+
+    const inserted = await tx
+      .insert(t.residentAnnouncementReads)
+      .values(
+        ids.map((announcementId) => ({
+          villageId: input.villageId,
+          residentId: resident.id,
+          announcementId,
+          readAt: new Date(),
+        })),
+      )
+      .onConflictDoNothing({
+        target: [
+          t.residentAnnouncementReads.residentId,
+          t.residentAnnouncementReads.announcementId,
+        ],
+      })
+      .returning({ id: t.residentAnnouncementReads.id });
+
+    return { updated: inserted.length };
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Citizen reports                                                             */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Files a laporan/aspirasi from the resident portal (or from the loket counter
+ * on somebody's behalf) and pings every officer with a broadcast notification.
+ */
+export async function createCitizenReport(input: {
+  villageId: string;
+  residentId: string | null;
+  /** Officer recording a counter filing; null when the resident submits online. */
+  staffId?: string | null;
+  draft: ReportDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = input.staffId ? await loadStaff(tx, input.staffId) : null;
+    const resident = input.residentId
+      ? await loadResident(tx, input.villageId, input.residentId)
+      : null;
+
+    // Identity always comes from the registry, never from the submitted form.
+    const reporter = resident
+      ? {
+          name: resident.fullName,
+          nik: resident.nik,
+          phone: resident.phone,
+          neighborhoodId: resident.neighborhoodId,
+        }
+      : input.draft.reporter
+        ? {
+            name: input.draft.reporter.name,
+            nik: input.draft.reporter.nik ?? null,
+            phone: input.draft.reporter.phone ?? null,
+            neighborhoodId: input.draft.neighborhoodId ?? null,
+          }
+        : null;
+
+    if (!reporter) {
+      throw new DomainError(
+        "Nama pelapor wajib diisi untuk laporan yang dicatat di loket.",
+        "REPORTER_REQUIRED",
+        422,
+      );
+    }
+
+    const neighborhoodId = input.draft.neighborhoodId ?? reporter.neighborhoodId;
+    const neighborhood = neighborhoodId
+      ? await loadNeighborhood(tx, input.villageId, neighborhoodId)
+      : null;
+
+    const ticket = await nextTicket(tx, "citizen_reports", "LPR");
+    const submittedAt = new Date();
+
+    const [report] = await tx
+      .insert(t.citizenReports)
+      .values({
+        ticket,
+        villageId: input.villageId,
+        reporterResidentId: resident?.id ?? null,
+        reporterName: reporter.name,
+        reporterNik: reporter.nik,
+        reporterPhone: reporter.phone,
+        neighborhoodId: neighborhood?.id ?? null,
+        category: input.draft.category,
+        subject: input.draft.subject,
+        body: input.draft.body,
+        status: "NEW",
+        priority: input.draft.priority,
+        handledByStaffId: null,
+        responseCount: 0,
+        submittedAt,
+      })
+      .returning();
+
+    const categoryLabel =
+      REPORT_CATEGORY[input.draft.category] ?? input.draft.category;
+    const location = neighborhood
+      ? `${neighborhood.hamletName} RT ${neighborhood.rt}/RW ${neighborhood.rw}`
+      : "lokasi tidak disebutkan";
+
+    await writeAudit(tx, input.villageId, {
+      kind: "LAPORAN_BARU",
+      summary: `${reporter.name} menyampaikan laporan ${categoryLabel.toLowerCase()} "${input.draft.subject}" (${location}) melalui ${staff ? "loket pelayanan" : "portal warga"}.`,
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: ticket,
+      actor: staff
+        ? {
+            id: staff.id,
+            name: staff.fullName,
+            initials: staff.initials,
+            role: staff.jobTitle,
+          }
+        : {
+            id: null,
+            name: reporter.name,
+            initials: initialsOf(reporter.name) || "W",
+            role: "Warga (Portal)",
+          },
+      meta: {
+        category: input.draft.category,
+        priority: input.draft.priority,
+        channel: staff ? "LOKET" : "PORTAL_WARGA",
+      },
+    });
+
+    await notifyOfficers(tx, input.villageId, {
+      title: `Laporan baru ${ticket} — ${categoryLabel}`,
+      body: `${input.draft.subject} dilaporkan oleh ${reporter.name} (${location}).`,
+      severity: notificationSeverity(input.draft.priority),
+      href: "/laporan",
+    });
+
+    return report;
+  });
+}
 
 export async function advanceReport(input: {
   villageId: string;
@@ -806,6 +1259,32 @@ export async function advanceReport(input: {
   return db.transaction(async (tx) => {
     const staff = await loadStaff(tx, input.staffId);
 
+    const [current] = await tx
+      .select({
+        id: t.citizenReports.id,
+        ticket: t.citizenReports.ticket,
+        status: t.citizenReports.status,
+      })
+      .from(t.citizenReports)
+      .where(
+        and(
+          eq(t.citizenReports.id, input.reportId),
+          eq(t.citizenReports.villageId, input.villageId),
+        ),
+      )
+      .limit(1);
+
+    if (!current) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
+
+    // A closed report is archived material: reopening it belongs in a new ticket.
+    if (current.status === "RESOLVED" || current.status === "REJECTED") {
+      throw new DomainError(
+        `Laporan ${current.ticket} sudah ditutup (${REPORT_STATUS[current.status]?.label ?? current.status}).`,
+        "INVALID_TRANSITION",
+        409,
+      );
+    }
+
     const [report] = await tx
       .update(t.citizenReports)
       .set({
@@ -815,12 +1294,7 @@ export async function advanceReport(input: {
         responseCount: sql`${t.citizenReports.responseCount} + 1`,
         updatedAt: new Date(),
       })
-      .where(
-        and(
-          eq(t.citizenReports.id, input.reportId),
-          eq(t.citizenReports.villageId, input.villageId),
-        ),
-      )
+      .where(eq(t.citizenReports.id, input.reportId))
       .returning();
 
     if (!report) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
@@ -836,5 +1310,353 @@ export async function advanceReport(input: {
     });
 
     return report;
+  });
+}
+/* -------------------------------------------------------------------------- */
+/* Population registry (capability: manageRegistry)                             */
+/* -------------------------------------------------------------------------- */
+
+async function assertNikAvailable(tx: DbOrTx, nik: string) {
+  const [existing] = await tx
+    .select({ id: t.residents.id, fullName: t.residents.fullName })
+    .from(t.residents)
+    .where(eq(t.residents.nik, nik))
+    .limit(1);
+  if (existing) {
+    throw new DomainError(
+      `NIK ${nik} sudah terdaftar atas nama ${existing.fullName}.`,
+      "NIK_DUPLICATE",
+      409,
+    );
+  }
+}
+
+/** Registers a new penduduk with full demographic detail. */
+export async function createResident(input: {
+  villageId: string;
+  staffId: string;
+  draft: ResidentDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    await assertNikAvailable(tx, input.draft.nik);
+    const neighborhood = await loadNeighborhood(
+      tx,
+      input.villageId,
+      input.draft.neighborhoodId,
+    );
+    const family = input.draft.familyId
+      ? await loadFamily(tx, input.villageId, input.draft.familyId)
+      : null;
+
+    const [resident] = await tx
+      .insert(t.residents)
+      .values({
+        villageId: input.villageId,
+        familyId: family?.id ?? null,
+        nik: input.draft.nik,
+        fullName: input.draft.fullName,
+        gender: input.draft.gender,
+        birthPlace: input.draft.birthPlace,
+        birthDate: input.draft.birthDate,
+        religion: input.draft.religion,
+        maritalStatus: input.draft.maritalStatus,
+        education: input.draft.education ?? null,
+        occupation: input.draft.occupation ?? null,
+        nationality: input.draft.nationality,
+        familyRelation: input.draft.familyRelation,
+        neighborhoodId: neighborhood.id,
+        address: input.draft.address,
+        phone: input.draft.phone ?? null,
+        status: input.draft.status,
+        documentsVerified: input.draft.documentsVerified,
+      })
+      .returning();
+
+    if (family) await syncFamilyMemberCount(tx, family.id);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENDAFTARAN_PENDUDUK",
+      summary: `${resident.fullName} (NIK ${resident.nik}) didaftarkan sebagai penduduk ${neighborhood.hamletName} RT ${neighborhood.rt}/RW ${neighborhood.rw}.`,
+      subjectType: "resident",
+      subjectId: resident.id,
+      subjectRef: resident.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        nik: resident.nik,
+        familyId: family?.id ?? null,
+        kkNumber: family?.kkNumber ?? null,
+        status: resident.status,
+      },
+    });
+
+    return resident;
+  });
+}
+
+/**
+ * Edits demographic data and records status changes (pindah keluar, meninggal,
+ * …) as append-only rows in `resident_mutations`.
+ */
+export async function updateResident(input: {
+  villageId: string;
+  staffId: string;
+  residentId: string;
+  draft: ResidentUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    const neighborhood = input.draft.neighborhoodId
+      ? await loadNeighborhood(tx, input.villageId, input.draft.neighborhoodId)
+      : null;
+
+    const nextFamilyId =
+      input.draft.familyId === undefined
+        ? resident.familyId
+        : input.draft.familyId;
+    const nextFamily = nextFamilyId
+      ? await loadFamily(tx, input.villageId, nextFamilyId)
+      : null;
+
+    const patch: Partial<t.NewResident> = {
+      updatedAt: new Date(),
+    };
+    if (input.draft.fullName !== undefined) patch.fullName = input.draft.fullName;
+    if (input.draft.birthPlace !== undefined) patch.birthPlace = input.draft.birthPlace;
+    if (input.draft.birthDate !== undefined) patch.birthDate = input.draft.birthDate;
+    if (input.draft.religion !== undefined) patch.religion = input.draft.religion;
+    if (input.draft.maritalStatus !== undefined) patch.maritalStatus = input.draft.maritalStatus;
+    if (input.draft.education !== undefined) patch.education = input.draft.education;
+    if (input.draft.occupation !== undefined) patch.occupation = input.draft.occupation;
+    if (input.draft.nationality !== undefined) patch.nationality = input.draft.nationality;
+    if (input.draft.familyRelation !== undefined) patch.familyRelation = input.draft.familyRelation;
+    if (neighborhood) patch.neighborhoodId = neighborhood.id;
+    if (input.draft.familyId !== undefined) patch.familyId = nextFamily?.id ?? null;
+    if (input.draft.address !== undefined) patch.address = input.draft.address;
+    if (input.draft.phone !== undefined) patch.phone = input.draft.phone ?? null;
+    if (input.draft.status !== undefined) patch.status = input.draft.status;
+    if (input.draft.documentsVerified !== undefined) {
+      patch.documentsVerified = input.draft.documentsVerified;
+    }
+
+    const [updated] = await tx
+      .update(t.residents)
+      .set(patch)
+      .where(eq(t.residents.id, resident.id))
+      .returning();
+    if (!updated) throw new DomainError("Penduduk tidak ditemukan", "RESIDENT_NOT_FOUND", 404);
+
+    const statusChanged = input.draft.status !== undefined && input.draft.status !== resident.status;
+
+    // Status changes leave a permanent trace in the mutation ledger.
+    if (statusChanged) {
+      const kind =
+        input.draft.mutationKind ??
+        (input.draft.status === "MENINGGAL"
+          ? "KEMATIAN"
+          : input.draft.status === "PINDAH_KELUAR"
+            ? "PINDAH_KELUAR"
+            : "PINDAH_DATANG");
+
+      await tx.insert(t.residentMutations).values({
+        residentId: resident.id,
+        kind,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+        notes:
+          input.draft.mutationNote ??
+          `Status kependudukan diubah menjadi ${input.draft.status}.`,
+        recordedByStaffId: staff.id,
+      });
+    }
+
+    if (nextFamilyId && nextFamilyId !== resident.familyId) {
+      await syncFamilyMemberCount(tx, nextFamilyId);
+    }
+    if (resident.familyId && resident.familyId !== nextFamilyId) {
+      await syncFamilyMemberCount(tx, resident.familyId);
+    }
+
+    await writeAudit(tx, input.villageId, {
+      kind: "MUTASI_PENDUDUK",
+      summary: statusChanged
+        ? `Status ${updated.fullName} (NIK ${updated.nik}) diubah menjadi ${updated.status}${input.draft.mutationKind ? ` — ${MUTATION_KIND[input.draft.mutationKind] ?? input.draft.mutationKind}` : ""}.`
+        : `Data kependudukan ${updated.fullName} (NIK ${updated.nik}) diperbarui oleh ${staff.jobTitle}.`,
+      subjectType: "resident",
+      subjectId: updated.id,
+      subjectRef: updated.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        nik: updated.nik,
+        changedFields: Object.keys(patch).filter((key) => key !== "updatedAt"),
+        fromStatus: resident.status,
+        toStatus: updated.status,
+        mutationKind: input.draft.mutationKind ?? null,
+      },
+    });
+
+    return updated;
+  });
+}
+
+/** Opens a Kartu Keluarga and moves the listed residents into it. */
+export async function createFamily(input: {
+  villageId: string;
+  staffId: string;
+  draft: FamilyDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+
+    const [existing] = await tx
+      .select({ id: t.families.id, headName: t.families.headName })
+      .from(t.families)
+      .where(eq(t.families.kkNumber, input.draft.kkNumber))
+      .limit(1);
+    if (existing) {
+      throw new DomainError(
+        `Nomor KK ${input.draft.kkNumber} sudah terdaftar atas nama ${existing.headName}.`,
+        "KK_DUPLICATE",
+        409,
+      );
+    }
+
+    const neighborhood = await loadNeighborhood(
+      tx,
+      input.villageId,
+      input.draft.neighborhoodId,
+    );
+
+    // Members must all belong to this village; one bad id fails the whole write.
+    const members: t.Resident[] = [];
+    for (const memberId of input.draft.memberIds) {
+      members.push(await loadResident(tx, input.villageId, memberId));
+    }
+
+    const [family] = await tx
+      .insert(t.families)
+      .values({
+        villageId: input.villageId,
+        kkNumber: input.draft.kkNumber,
+        neighborhoodId: neighborhood.id,
+        address: input.draft.address,
+        headName: input.draft.headName,
+        welfareClass: input.draft.welfareClass,
+        memberCount: 0,
+      })
+      .returning();
+
+    for (const member of members) {
+      await tx
+        .update(t.residents)
+        .set({ familyId: family.id, updatedAt: new Date() })
+        .where(eq(t.residents.id, member.id));
+      if (member.familyId) await syncFamilyMemberCount(tx, member.familyId);
+    }
+    await syncFamilyMemberCount(tx, family.id);
+
+    const [withCount] = await tx
+      .select()
+      .from(t.families)
+      .where(eq(t.families.id, family.id))
+      .limit(1);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENDAFTARAN_PENDUDUK",
+      summary: `Kartu Keluarga ${family.kkNumber} atas nama ${family.headName} diterbitkan di ${neighborhood.hamletName} RT ${neighborhood.rt}/RW ${neighborhood.rw} dengan ${withCount?.memberCount ?? 0} anggota.`,
+      subjectType: "family",
+      subjectId: family.id,
+      subjectRef: family.kkNumber,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        kkNumber: family.kkNumber,
+        welfareClass: family.welfareClass,
+        memberIds: members.map((member) => member.id),
+      },
+    });
+
+    return withCount ?? family;
+  });
+}
+
+/**
+ * Provisions the portal login for a resident. Audited as a security event:
+ * only the fact of provisioning is recorded, never the password itself.
+ */
+export async function createResidentAccount(input: {
+  villageId: string;
+  staffId: string;
+  draft: ResidentAccountDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.draft.residentId);
+
+    const [existing] = await tx
+      .select({ id: t.residentAccounts.id })
+      .from(t.residentAccounts)
+      .where(eq(t.residentAccounts.residentId, resident.id))
+      .limit(1);
+    if (existing) {
+      throw new DomainError(
+        `Akun portal untuk ${resident.fullName} sudah tersedia.`,
+        "ACCOUNT_EXISTS",
+        409,
+      );
+    }
+
+    const [nikTaken] = await tx
+      .select({ id: t.residentAccounts.id })
+      .from(t.residentAccounts)
+      .where(eq(t.residentAccounts.nik, resident.nik))
+      .limit(1);
+    if (nikTaken) {
+      throw new DomainError(
+        `NIK ${resident.nik} sudah dipakai oleh akun portal lain.`,
+        "NIK_DUPLICATE",
+        409,
+      );
+    }
+
+    const [account] = await tx
+      .insert(t.residentAccounts)
+      .values({
+        villageId: input.villageId,
+        residentId: resident.id,
+        nik: resident.nik,
+        passwordHash: hashPassword(input.draft.password),
+        active: true,
+        failedAttempts: 0,
+        lockedUntil: null,
+      })
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "KEAMANAN_AKUN",
+      summary: `Akun portal warga dibuat untuk ${resident.fullName} (NIK ${resident.nik}) oleh ${staff.jobTitle}.`,
+      subjectType: "resident_account",
+      subjectId: account.id,
+      subjectRef: account.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      // Never the password — only that it was provisioned and by whom.
+      meta: { residentId: resident.id, nik: resident.nik, active: account.active },
+    });
+
+    return {
+      id: account.id,
+      residentId: account.residentId,
+      nik: account.nik,
+      active: account.active,
+      createdAt: account.createdAt,
+    };
   });
 }

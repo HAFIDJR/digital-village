@@ -1,15 +1,29 @@
 "use client";
 
-import { Clock3, MapPin, MessageSquare, Phone, Printer, ShieldCheck, UserCheck } from "lucide-react";
+import {
+  CheckCheck,
+  CircleAlert,
+  Clock3,
+  LoaderCircle,
+  MapPin,
+  MessageSquare,
+  Phone,
+  Printer,
+  ShieldCheck,
+  UserCheck,
+  Wrench,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/primitives";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
-import { PRIORITY, REPORT_CATEGORY, REPORT_STATUS, TONE_CLASSES } from "@/lib/domain";
+import { PRIORITY, REPORT_CATEGORY, REPORT_STATUS, ROLE_CAPABILITIES, TONE_CLASSES } from "@/lib/domain";
 import { formatDateTime, formatNik, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { errorMessage, useAdvanceReportMutation, useGetShellQuery } from "@/store/api";
 import type { ReportRow } from "@/db/queries";
+import type { StaffRole } from "@/db/schema";
 
 import { useNow } from "../now-context";
 
@@ -21,7 +35,15 @@ export function ReportDrawer({
   onClose: () => void;
 }) {
   const now = useNow();
+  const shell = useGetShellQuery();
+  const [advance, advanceState] = useAdvanceReportMutation();
   const statusMeta = report ? (REPORT_STATUS[report.status] ?? { label: report.status, tone: "neutral" as const }) : null;
+
+  // Client-side mirror of the route guard (`requireStaffCapability("verify")`).
+  const canHandle = shell.data?.officer
+    ? (ROLE_CAPABILITIES[shell.data.officer.role as StaffRole]?.verify ?? false)
+    : false;
+  const closed = report?.status === "RESOLVED" || report?.status === "REJECTED";
 
   return (
     <Sheet open={Boolean(report)} onOpenChange={(open) => (open ? undefined : onClose())}>
@@ -149,10 +171,73 @@ export function ReportDrawer({
                 </dl>
 
                 <p className="mt-3 rounded-sm border border-line bg-surface-muted px-3 py-2 text-[10px] leading-4 text-fg-subtle">
-                  Tanggapan resmi kepada warga dikirim melalui modul Kanal Pengaduan dan otomatis
-                  tercatat pada jejak audit desa. Panel ini menampilkan data yang diterima operator
-                  tanpa mengubah isi laporan.
+                  Setiap perubahan status tercatat pada jejak audit desa dan langsung terlihat oleh
+                  pelapor di portal warga.
                 </p>
+
+                {canHandle ? (
+                  closed ? (
+                    <p className="mt-2 rounded-sm border border-line bg-surface-muted px-3 py-2 text-[10px] leading-4 text-fg-subtle">
+                      Laporan {report.ticket} sudah ditutup. Pembukaan kembali dilakukan dengan
+                      tiket baru.
+                    </p>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={advanceState.isLoading}
+                        onClick={() =>
+                          advance({
+                            id: report.id,
+                            body: { status: "IN_PROGRESS", note: "Sedang ditindaklanjuti petugas." },
+                          })
+                        }
+                      >
+                        <Wrench aria-hidden />
+                        Sedang Dikerjakan
+                      </Button>
+                      <Button
+                        variant="success"
+                        size="sm"
+                        disabled={advanceState.isLoading}
+                        onClick={() =>
+                          advance({
+                            id: report.id,
+                            body: { status: "RESOLVED", note: "Selesai ditindaklanjuti." },
+                          })
+                        }
+                      >
+                        {advanceState.isLoading ? <LoaderCircle className="animate-spin" aria-hidden /> : <CheckCheck aria-hidden />}
+                        Tandai Selesai
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        disabled={advanceState.isLoading}
+                        onClick={() =>
+                          advance({
+                            id: report.id,
+                            body: { status: "REJECTED", note: "Di luar kewenangan desa." },
+                          })
+                        }
+                      >
+                        <CircleAlert aria-hidden />
+                        Tolak
+                      </Button>
+                    </div>
+                  )
+                ) : null}
+
+                {advanceState.isError ? (
+                  <p
+                    role="alert"
+                    className="mt-2 flex items-start gap-1.5 rounded-sm border border-rejected/30 bg-rejected/8 px-3 py-2 text-[10px] leading-4 text-rejected"
+                  >
+                    <CircleAlert className="mt-0.5 size-3 shrink-0" aria-hidden />
+                    {errorMessage(advanceState.error)}
+                  </p>
+                ) : null}
               </section>
             </div>
 
