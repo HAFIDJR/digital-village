@@ -43,7 +43,6 @@ export const residentStatusEnum = pgEnum("resident_status", [
   "TIDAK_DIKENAL",
 ]);
 
-/** Full lifecycle of a citizen letter request. */
 export const requestStatusEnum = pgEnum("request_status", [
   "PENDING_VERIFIKASI",
   "BERKAS_TIDAK_LENGKAP",
@@ -55,10 +54,9 @@ export const requestStatusEnum = pgEnum("request_status", [
   "DITOLAK",
 ]);
 
-/** Scanned-file quality verdict reached by the verifying officer. */
 export const attachmentStatusEnum = pgEnum("attachment_status", [
   "LENGKAP",
-  "BURAM", // "KTP Buram" — legible enough to read, not enough to archive
+  "BURAM",
   "TIDAK_ADA",
   "TIDAK_RELEVAN",
 ]);
@@ -99,6 +97,8 @@ export const activityKindEnum = pgEnum("activity_kind", [
   "TANDA_TANGAN",
   "CETAK_SURAT",
   "MUTASI_PENDUDUK",
+  "PENDAFTARAN_PENDUDUK",
+  "LAPORAN_BARU",
   "PENGUMUMAN",
   "MASUK_LOG",
   "KELUAR_LOG",
@@ -115,9 +115,6 @@ export const signatureStatusEnum = pgEnum("signature_status", [
   "DIBATALKAN",
 ]);
 
-/* ==========================================================================
-   VILLAGE PROFILE  (single-tenant, but keyed for future multi-village)
-   ========================================================================== */
 
 export const villages = pgTable("villages", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -126,7 +123,6 @@ export const villages = pgTable("villages", {
   regency: varchar("regency", { length: 120 }).notNull(), // kabupaten
   province: varchar("province", { length: 120 }).notNull(),
   postalCode: varchar("postal_code", { length: 8 }).notNull(),
-  /** 16-digit village code from the Ministry of Home Affairs (Kode Kemendagri). */
   villageCode: varchar("village_code", { length: 16 }).notNull(),
   headName: varchar("head_name", { length: 120 }).notNull(), // Kepala Desa
   headNipd: varchar("head_nipd", { length: 32 }),
@@ -134,7 +130,6 @@ export const villages = pgTable("villages", {
   officePhone: varchar("office_phone", { length: 32 }).notNull(),
   officeEmail: varchar("office_email", { length: 160 }).notNull(),
   website: varchar("website", { length: 160 }),
-  /** Public URL of the village seal (lambang desa). */
   sealUrl: text("seal_url"),
   establishedYear: smallint("established_year"),
   createdAt: timestamp("created_at", { withTimezone: true })
@@ -610,16 +605,22 @@ export const citizenReports = pgTable(
     villageId: uuid("village_id")
       .notNull()
       .references(() => villages.id, { onDelete: "cascade" }),
+    /** Set when the report is filed through the resident portal; loket filings stay null. */
+    reporterResidentId: uuid("reporter_resident_id").references(
+      () => residents.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     reporterName: varchar("reporter_name", { length: 120 }).notNull(),
     reporterNik: varchar("reporter_nik", { length: 16 }),
     reporterPhone: varchar("reporter_phone", { length: 32 }),
     neighborhoodId: uuid("neighborhood_id").references(() => neighborhoods.id, {
       onDelete: "set null",
     }),
-    category: varchar("category", { length: 60 }).notNull(), // INFRASTRUKTUR | KEBERSIHAN | KEAMANAN | LAYANAN | LAINNYA
+    category: varchar("category", { length: 60 }).notNull(), 
     subject: varchar("subject", { length: 200 }).notNull(),
     body: text("body").notNull(),
-    /** NEW | IN_PROGRESS | RESOLVED | REJECTED */
     status: varchar("status", { length: 24 }).notNull().default("NEW"),
     priority: priorityEnum("priority").notNull().default("NORMAL"),
     handledByStaffId: uuid("handled_by_staff_id").references(() => staff.id, {
@@ -639,6 +640,10 @@ export const citizenReports = pgTable(
     index("citizen_reports_status_idx").on(
       t.villageId,
       t.status,
+      t.submittedAt,
+    ),
+    index("citizen_reports_reporter_idx").on(
+      t.reporterResidentId,
       t.submittedAt,
     ),
   ],
@@ -665,7 +670,6 @@ export const announcements = pgTable(
     status: announcementStatusEnum("status").notNull().default("DRAF"),
     priority: priorityEnum("priority").notNull().default("NORMAL"),
     pinned: boolean("pinned").notNull().default(false),
-    /** Attachment allowance for surat edaran PDFs. */
     attachmentCount: smallint("attachment_count").notNull().default(0),
     audience: varchar("audience", { length: 80 })
       .notNull()
@@ -732,13 +736,12 @@ export const notifications = pgTable(
     villageId: uuid("village_id")
       .notNull()
       .references(() => villages.id, { onDelete: "cascade" }),
-    /** NULL = broadcast to every officer in the village. */
     recipientStaffId: uuid("recipient_staff_id").references(() => staff.id, {
       onDelete: "cascade",
     }),
     title: varchar("title", { length: 160 }).notNull(),
     body: varchar("body", { length: 320 }),
-    severity: varchar("severity", { length: 16 }).notNull().default("INFO"), // INFO | WARNING | CRITICAL | SUCCESS
+    severity: varchar("severity", { length: 16 }).notNull().default("INFO"), 
     href: text("href"),
     readAt: timestamp("read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -751,6 +754,32 @@ export const notifications = pgTable(
       t.readAt,
       t.createdAt,
     ),
+  ],
+);
+
+export const residentAnnouncementReads = pgTable(
+  "resident_announcement_reads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    residentId: uuid("resident_id")
+      .notNull()
+      .references(() => residents.id, { onDelete: "cascade" }),
+    announcementId: uuid("announcement_id")
+      .notNull()
+      .references(() => announcements.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("resident_announcement_reads_uq").on(
+      t.residentId,
+      t.announcementId,
+    ),
+    index("resident_announcement_reads_village_idx").on(t.villageId),
   ],
 );
 
@@ -853,6 +882,7 @@ export const residentsRelations = relations(residents, ({ one, many }) => ({
   }),
   mutations: many(residentMutations),
   requests: many(letterRequests),
+  reports: many(citizenReports),
 }));
 
 export const residentMutationsRelations = relations(
@@ -979,6 +1009,10 @@ export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
     fields: [citizenReports.villageId],
     references: [villages.id],
   }),
+  reporter: one(residents, {
+    fields: [citizenReports.reporterResidentId],
+    references: [residents.id],
+  }),
   neighborhood: one(neighborhoods, {
     fields: [citizenReports.neighborhoodId],
     references: [neighborhoods.id],
@@ -988,6 +1022,24 @@ export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
     references: [staff.id],
   }),
 }));
+
+export const residentAnnouncementReadsRelations = relations(
+  residentAnnouncementReads,
+  ({ one }) => ({
+    village: one(villages, {
+      fields: [residentAnnouncementReads.villageId],
+      references: [villages.id],
+    }),
+    resident: one(residents, {
+      fields: [residentAnnouncementReads.residentId],
+      references: [residents.id],
+    }),
+    announcement: one(announcements, {
+      fields: [residentAnnouncementReads.announcementId],
+      references: [announcements.id],
+    }),
+  }),
+);
 
 /* ==========================================================================
    INFERRED TYPES
@@ -999,7 +1051,9 @@ export type Neighborhood = typeof neighborhoods.$inferSelect;
 export type Staff = typeof staff.$inferSelect;
 export type StaffShift = typeof staffShifts.$inferSelect;
 export type Family = typeof families.$inferSelect;
+export type NewFamily = typeof families.$inferInsert;
 export type Resident = typeof residents.$inferSelect;
+export type NewResident = typeof residents.$inferInsert;
 export type ResidentMutation = typeof residentMutations.$inferSelect;
 export type LetterType = typeof letterTypes.$inferSelect;
 export type LetterRequirement = typeof letterRequirements.$inferSelect;
@@ -1008,10 +1062,13 @@ export type NewLetterRequest = typeof letterRequests.$inferInsert;
 export type LetterAttachment = typeof letterAttachments.$inferSelect;
 export type SignatureRequest = typeof signatureRequests.$inferSelect;
 export type CitizenReport = typeof citizenReports.$inferSelect;
+export type NewCitizenReport = typeof citizenReports.$inferInsert;
 export type Announcement = typeof announcements.$inferSelect;
 export type NewAnnouncement = typeof announcements.$inferInsert;
 export type ActivityLogEntry = typeof activityLog.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type ResidentAnnouncementRead =
+  typeof residentAnnouncementReads.$inferSelect;
 export type DailyStat = typeof dailyStats.$inferSelect;
 
 export type Session = typeof sessions.$inferSelect;

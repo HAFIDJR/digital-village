@@ -28,6 +28,29 @@ export function Input({
   );
 }
 
+export const selectClasses = [
+  "flex h-8 w-full min-w-0 appearance-none rounded-sm border border-line-strong bg-surface px-2 text-xs text-fg",
+  "transition-colors",
+  "hover:border-slate-400",
+  "focus-visible:outline-none focus-visible:border-civic focus-visible:ring-2 focus-visible:ring-civic/22",
+  "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:opacity-70",
+  "aria-invalid:border-rejected-solid aria-invalid:ring-2 aria-invalid:ring-rejected-solid/18",
+].join(" ");
+
+/** Native select styled to match `Input`; options stay accessible and fast. */
+export function Select({
+  className,
+  ...props
+}: React.ComponentProps<"select">) {
+  return (
+    <select
+      data-slot="select"
+      className={cn(selectClasses, className)}
+      {...props}
+    />
+  );
+}
+
 export function Textarea({
   className,
   ...props
