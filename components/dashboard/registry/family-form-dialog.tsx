@@ -120,8 +120,7 @@ export function FamilyFormDialog({
     } catch (error) {
       setErrors(errorFields(error));
     }
-  };
-
+  }
   const candidates = ((search.data?.rows as ResidentRow[] | undefined) ?? []).filter(
     (row) => !members.some((member) => member.id === row.id),
   );
@@ -131,7 +130,7 @@ export function FamilyFormDialog({
       <DialogContent
         labelledBy="family-form-title"
         describedBy="family-form-desc"
-        className="max-h-[88vh] max-w-2xl overflow-y-auto"
+        className="max-h-[88vh] max-w-2xl overflow-y-auto p-5"
       >
         <form onSubmit={submit} noValidate>
           <div className="mb-4 flex items-start gap-2.5 pr-6">
