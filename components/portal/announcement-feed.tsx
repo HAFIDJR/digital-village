@@ -27,11 +27,7 @@ import {
   useMarkResidentAnnouncementsReadMutation,
 } from "@/store/api";
 
-/**
- * Pengumuman desa as the resident sees it: derived from what the officer
- * published, so drafts and archived items never appear here. Read state lives
- * per resident, which is what drives the unread badge in the portal menu.
- */
+
 export function AnnouncementFeed() {
   const feed = useListResidentAnnouncementsQuery();
   const [markRead, markReadState] = useMarkResidentAnnouncementsReadMutation();

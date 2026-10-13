@@ -1262,7 +1262,6 @@ export async function advanceReport(input: {
 
     if (!current) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
 
-    // A closed report is archived material: reopening it belongs in a new ticket.
     if (current.status === "RESOLVED" || current.status === "REJECTED") {
       throw new DomainError(
         `Laporan ${current.ticket} sudah ditutup (${REPORT_STATUS[current.status]?.label ?? current.status}).`,
@@ -1633,7 +1632,6 @@ export async function createResidentAccount(input: {
       subjectId: account.id,
       subjectRef: account.nik,
       actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
-      // Never the password — only that it was provisioned and by whom.
       meta: { residentId: resident.id, nik: resident.nik, active: account.active },
     });
 
