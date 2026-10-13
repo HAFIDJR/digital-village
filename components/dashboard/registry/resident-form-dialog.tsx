@@ -122,7 +122,7 @@ export function ResidentFormDialog({
       <DialogContent
         labelledBy="resident-form-title"
         describedBy="resident-form-desc"
-        className="max-h-[88vh] max-w-2xl overflow-y-auto"
+        className="max-h-[88vh] max-w-2xl overflow-y-auto m-5 p-5"
       >
         <form onSubmit={submit} noValidate>
           <div className="mb-4 flex items-start gap-2.5 pr-6">

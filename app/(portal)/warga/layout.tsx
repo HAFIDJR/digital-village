@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { LogoutButton } from "@/components/auth/logout-button";
 import { VillageSeal } from "@/components/dashboard/village-seal";
+import { PortalNav } from "@/components/portal/portal-nav";
 import { ensureDatabaseReady } from "@/db/bootstrap";
 import { getVillageProfile } from "@/db/queries";
 import { requireResidentPage } from "@/lib/auth/guard";
@@ -47,6 +48,8 @@ export default async function PortalLayout({ children }: { children: ReactNode }
           </div>
         </div>
       </header>
+
+      <PortalNav />
 
       <main id="konten-utama" className="mx-auto w-full max-w-4xl flex-1 px-4 py-6">
         {children}

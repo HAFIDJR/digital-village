@@ -86,12 +86,8 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
   const [familyFormOpen, setFamilyFormOpen] = React.useState(false);
   const [accountTarget, setAccountTarget] = React.useState<ResidentAccountTarget | null>(null);
   const [reportOpen, setReportOpen] = React.useState(false);
-  // Remounting the dialogs on open starts them from a clean form; that keeps
-  // the reset out of an effect (React 19 flags synchronous setState there).
   const [formNonce, setFormNonce] = React.useState(0);
 
-  // Client-side mirror of the server guard: the buttons only render for roles
-  // that actually hold `manageRegistry`.
   const canManageRegistry = shell.data?.officer
     ? (ROLE_CAPABILITIES[shell.data.officer.role as StaffRole]?.manageRegistry ?? false)
     : false;
