@@ -20,7 +20,7 @@ import {
   REPORT_CATEGORY,
   REPORT_STATUS,
   REQUEST_STATUS,
-  notificationSeverity,
+  NOTIFICATION_SEVERITY,
 } from "@/lib/domain";
 import { initialsOf } from "@/lib/format";
 import { verifyPassword } from "@/lib/auth/password";
@@ -1641,6 +1641,56 @@ export async function createResidentAccount(input: {
       nik: account.nik,
       active: account.active,
       createdAt: account.createdAt,
+    };
+  });
+}
+export async function deleteResident(input: {
+  villageId: string;
+  staffId: string;
+  residentId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    // Check if resident has associated reports
+    const [reportCount] = await tx
+      .select({ count: sql<number>`count(*)` })
+      .from(t.citizenReports)
+      .where(eq(t.citizenReports.reporterResidentId, resident.id));
+
+    if (reportCount > 0) {
+      throw new DomainError(
+        `Tidak dapat menghapus ${resident.fullName} karena memiliki ${reportCount} laporan. Hubungi admin untuk pemindahan data.`,
+        "RESIDENT_HAS_DEPENDENCIES",
+        409,
+      );
+    }
+
+    const [deleted] = await tx
+      .delete(t.residents)
+      .where(eq(t.residents.id, resident.id))
+      .returning();
+
+    if (!deleted) {
+      throw new DomainError("Penduduk tidak ditemukan", "RESIDENT_NOT_FOUND", 404);
+    }
+
+    await writeAudit(tx, input.villageId, {
+      kind: "HAPUS_DATA",
+      summary: `Data ${resident.fullName} (NIK ${resident.nik}) dihapus oleh ${staff.jobTitle}.`,
+      subjectType: "resident",
+      subjectId: resident.id,
+      subjectRef: resident.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: { residentId: resident.id, nik: resident.nik },
+    });
+
+    return {
+      id: deleted.id,
+      nik: deleted.nik,
     };
   });
 }

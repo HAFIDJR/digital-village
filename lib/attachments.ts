@@ -8,10 +8,15 @@ export const UPLOAD_ROOT =
   process.env.UPLOAD_ROOT ?? path.join(process.cwd(), ".data", "storage");
 export const ATTACHMENT_KEY_PREFIX = "uploads";
 
-const EXTENSIONS: Record<string, string> = {
+export type AttachmentScope =
+  | { collection: "requests"; id: string }
+  | { collection: "reports"; id: string };
+
+export const EXTENSIONS: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
   "application/pdf": ".pdf",
+  // "image/webp": ".webp" // stored as JPEG client-side; keep out
 };
 
 export type StoredAttachmentFile = {
@@ -22,6 +27,7 @@ export type StoredAttachmentFile = {
 function extensionFor(mimeType: string) {
   return EXTENSIONS[mimeType] ?? ".bin";
 }
+
 function resolveKey(storageKey: string) {
   const absolute = path.resolve(UPLOAD_ROOT, storageKey);
   const root = path.resolve(UPLOAD_ROOT);
@@ -31,16 +37,31 @@ function resolveKey(storageKey: string) {
   return absolute;
 }
 
-export async function saveAttachment(input: {
+export async function saveUpload(input: {
   villageId: string;
-  requestId: string;
+  scope: AttachmentScope;
   docKey: string;
+  name: string;
   mimeType: string;
   data: Uint8Array;
 }): Promise<StoredAttachmentFile> {
   const docKey = input.docKey.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
-  const name = `${docKey.toLowerCase().replace(/_/g, "-")}-${randomBytes(6).toString("hex")}${extensionFor(input.mimeType)}`;
-  const storageKey = `${ATTACHMENT_KEY_PREFIX}/villages/${input.villageId}/requests/${input.requestId}/${name}`;
+  const name = `${docKey.toLowerCase().replace(/_/g, "-")}-${randomBytes(6).toString(
+    "hex"
+  )}${extensionFor(input.mimeType)}`;
+
+  const collection = input.scope.collection;
+  const id = input.scope.id;
+
+  // Keep requests storage key byte-identical to the original implementation
+  // so already-uploaded letter scans still resolve.
+  let storageKey: string;
+  if (collection === "requests") {
+    storageKey = `${ATTACHMENT_KEY_PREFIX}/villages/${input.villageId}/requests/${id}/${name}`;
+  } else {
+    // reports: under uploads/villages/<villageId>/reports/<reportId>/<name>
+    storageKey = `${ATTACHMENT_KEY_PREFIX}/villages/${input.villageId}/reports/${id}/${name}`;
+  }
 
   const absolute = resolveKey(storageKey);
   await fs.mkdir(path.dirname(absolute), { recursive: true });
@@ -48,6 +69,9 @@ export async function saveAttachment(input: {
 
   return { storageKey, sizeBytes: input.data.byteLength };
 }
+
+/** Thin wrapper kept for backward compatibility; preserves byte-identical keys for `requests`. */
+export const saveAttachment = saveUpload;
 
 /** Reads the bytes behind a storage key, or null when the file is missing. */
 export async function readAttachment(

@@ -9,7 +9,13 @@ export type Tone = "pending" | "approved" | "rejected" | "progress" | "neutral";
 
 export const TONE_CLASSES: Record<
   Tone,
-  { chip: string; dot: string; text: string; bar: string; softBorder: string }
+  {
+    chip: string;
+    dot: string;
+    text: string;
+    bar: string;
+    softBorder: string;
+  }
 > = {
   pending: {
     chip: "border-pending-line/70 bg-pending-bg text-pending",
@@ -50,7 +56,12 @@ export const TONE_CLASSES: Record<
 
 export const REQUEST_STATUS: Record<
   RequestStatus,
-  { label: string; short: string; tone: Tone; description: string }
+  {
+    label: string;
+    short: string;
+    tone: Tone;
+    description: string;
+  }
 > = {
   PENDING_VERIFIKASI: {
     label: "Pending Verifikasi",
@@ -115,13 +126,15 @@ export const UNPROCESSED_STATUSES: RequestStatus[] = [
   "BERKAS_TIDAK_LENGKAP",
 ];
 
-export const ALL_REQUEST_STATUSES = Object.keys(
-  REQUEST_STATUS,
-) as RequestStatus[];
+export const ALL_REQUEST_STATUSES = Object.keys(REQUEST_STATUS) as RequestStatus[];
 
 export const ATTACHMENT_STATUS: Record<
   LetterAttachmentStatus,
-  { label: string; tone: Tone; hint: string }
+  {
+    label: string;
+    tone: Tone;
+    hint: string;
+  }
 > = {
   LENGKAP: {
     label: "Lengkap",
@@ -147,22 +160,79 @@ export const ATTACHMENT_STATUS: Record<
 
 export const ACTIVITY_KIND: Record<
   ActivityKind,
-  { label: string; tone: Tone }
+  {
+    label: string;
+    tone: Tone;
+  }
 > = {
-  PENGAJUAN_BARU: { label: "Pengajuan Baru", tone: "progress" },
-  VERIFIKASI_BERKAS: { label: "Verifikasi Berkas", tone: "progress" },
-  PENOLAKAN: { label: "Penolakan", tone: "rejected" },
-  PERSETUJUAN: { label: "Persetujuan", tone: "approved" },
-  TANDA_TANGAN: { label: "Tanda Tangan", tone: "approved" },
-  CETAK_SURAT: { label: "Cetak Surat", tone: "neutral" },
-  MUTASI_PENDUDUK: { label: "Mutasi Penduduk", tone: "neutral" },
-  PENDAFTARAN_PENDUDUK: { label: "Pendaftaran Penduduk", tone: "progress" },
-  LAPORAN_BARU: { label: "Laporan Baru", tone: "pending" },
-  PENGUMUMAN: { label: "Pengumuman", tone: "progress" },
-  MASUK_LOG: { label: "Masuk Sistem", tone: "progress" },
-  KELUAR_LOG: { label: "Keluar Sistem", tone: "neutral" },
-  AKTIVASI_TTD: { label: "Aktivasi Sertifikat TTD", tone: "approved" },
-  KEAMANAN_AKUN: { label: "Keamanan Akun", tone: "rejected" },
+  PENGAJUAN_BARU: {
+    label: "Pengajuan Baru",
+    tone: "progress",
+  },
+  VERIFIKASI_BERKAS: {
+    label: "Verifikasi Berkas",
+    tone: "progress",
+  },
+  PENOLAKAN: {
+    label: "Penolakan",
+    tone: "rejected",
+  },
+  PERSETUJUAN: {
+    label: "Persetujuan",
+    tone: "approved",
+  },
+  TANDA_TANGAN: {
+    label: "Tanda Tangan",
+    tone: "approved",
+  },
+  CETAK_SURAT: {
+    label: "Cetak Surat",
+    tone: "neutral",
+  },
+  MUTASI_PENDUDUK: {
+    label: "Mutasi Penduduk",
+    tone: "neutral",
+  },
+  PENDAFTARAN_PENDUDUK: {
+    label: "Pendaftaran Penduduk",
+    tone: "progress",
+  },
+  LAPORAN_BARU: {
+    label: "Laporan Baru",
+    tone: "pending",
+  },
+  PENGUMUMAN: {
+    label: "Pengumuman",
+    tone: "progress",
+  },
+  MASUK_LOG: {
+    label: "Masuk Sistem",
+    tone: "progress",
+  },
+  KELUAR_LOG: {
+    label: "Keluar Sistem",
+    tone: "neutral",
+  },
+  AKTIVASI_TTD: {
+    label: "Aktivasi Sertifikat TTD",
+    tone: "approved",
+  },
+  KEAMANAN_AKUN: {
+    label: "Keamanan Akun",
+    tone: "rejected",
+  },
+  PERUBAHAN_DATA: {
+    label: "Perubahan Data",
+    tone: "progress",
+  },
+  PENGHAPUSAN_DATA: {
+    label: "Penghapusan Data",
+    tone: "rejected",
+  },
+  PERUBAHAN_WILAYAH: {
+    label: "Perubahan Wilayah",
+    tone: "neutral",
+  },
 };
 
 export const STAFF_ROLE: Record<StaffRole, string> = {
@@ -182,6 +252,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: boolean;
     manageRegistry: boolean;
     manageSettings: boolean;
+    manageResidentAccounts: boolean;
+    resetPassword: boolean;
+    toggleAccountStatus: boolean;
   }
 > = {
   OPERATOR_DESA: {
@@ -190,6 +263,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: true,
     manageRegistry: true,
     manageSettings: true,
+    manageResidentAccounts: true,
+    resetPassword: true,
+    toggleAccountStatus: true,
   },
   SEKDES: {
     verify: true,
@@ -197,6 +273,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: true,
     manageRegistry: true,
     manageSettings: true,
+    manageResidentAccounts: true,
+    resetPassword: true,
+    toggleAccountStatus: true,
   },
   KASI_PELAYANAN: {
     verify: true,
@@ -204,6 +283,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: true,
     manageRegistry: true,
     manageSettings: false,
+    manageResidentAccounts: true,
+    resetPassword: true,
+    toggleAccountStatus: true,
   },
   KAUR_TU: {
     verify: true,
@@ -211,6 +293,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: true,
     manageRegistry: true,
     manageSettings: false,
+    manageResidentAccounts: true,
+    resetPassword: true,
+    toggleAccountStatus: true,
   },
   KADES: {
     verify: false,
@@ -218,6 +303,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: true,
     manageRegistry: false,
     manageSettings: true,
+    manageResidentAccounts: false,
+    resetPassword: false,
+    toggleAccountStatus: false,
   },
   KADUS: {
     verify: false,
@@ -225,6 +313,9 @@ export const ROLE_CAPABILITIES: Record<
     publish: false,
     manageRegistry: false,
     manageSettings: false,
+    manageResidentAccounts: false,
+    resetPassword: false,
+    toggleAccountStatus: false,
   },
 };
 
@@ -244,10 +335,7 @@ export const REPORT_CATEGORY: Record<string, string> = {
   LAINNYA: "Lainnya",
 };
 
-export const ANNOUNCEMENT_CHANNEL: Record<
-  string,
-  { label: string; description: string }
-> = {
+export const ANNOUNCEMENT_CHANNEL: Record<string, { label: string; description: string }> = {
   WEBSITE_DESA: {
     label: "Website Desa",
     description: "Tampil pada halaman beranda sukamaju.desa.id",
@@ -256,16 +344,13 @@ export const ANNOUNCEMENT_CHANNEL: Record<
     label: "Papan Informasi",
     description: "Dicetak dan ditempel di papan informasi balai desa",
   },
-  PENGUMUMAN_WA: {
+  PENGUMUNGAN_WA: {
     label: "Grup WhatsApp Warga",
     description: "Diteruskan ke grup koordinasi RT/RW",
   },
 };
 
-export const ANNOUNCEMENT_STATUS: Record<
-  string,
-  { label: string; tone: Tone }
-> = {
+export const ANNOUNCEMENT_STATUS: Record<string, { label: string; tone: Tone }> = {
   DRAF: { label: "Draf", tone: "neutral" },
   TERJADWAL: { label: "Terjadwal", tone: "pending" },
   TERBIT: { label: "Terbit", tone: "approved" },
@@ -274,34 +359,26 @@ export const ANNOUNCEMENT_STATUS: Record<
 
 export const PRIORITY: Record<
   string,
-  { label: string; tone: Tone; className: string }
+  {
+    label: string;
+    tone: Tone;
+    className: string;
+  }
 > = {
   NORMAL: { label: "Normal", tone: "neutral", className: "text-fg-subtle" },
   PRIORITAS: { label: "Prioritas", tone: "pending", className: "text-pending" },
   DARURAT: { label: "Darurat", tone: "rejected", className: "text-rejected" },
 };
 
-export const NOTIFICATION_SEVERITY: Record<
-  string,
-  { label: string; tone: Tone }
-> = {
-  INFO: { label: "Informasi", tone: "progress" },
-  SUCCESS: { label: "Berhasil", tone: "approved" },
-  WARNING: { label: "Perhatian", tone: "pending" },
-  CRITICAL: { label: "Kritis", tone: "rejected" },
-};
-
-/**
- * Village-wide `priority` mapped onto the notification severity scale both
- * feeds colour by: DARURAT → CRITICAL, PRIORITAS → WARNING, otherwise INFO.
- */
-export function notificationSeverity(
+export const NOTIFICATION_SEVERITY: (
   priority: string | null | undefined,
-): "INFO" | "WARNING" | "CRITICAL" {
+) => "INFO" | "WARNING" | "CRITICAL" = (
+  priority,
+) => {
   if (priority === "DARURAT") return "CRITICAL";
   if (priority === "PRIORITAS") return "WARNING";
   return "INFO";
-}
+};
 
 export const REQUEST_CHANNEL: Record<string, string> = {
   WEBSITE: "Website Desa",
@@ -370,7 +447,11 @@ export const RELIGION_LABEL: Record<string, string> = {
 
 export const RESIDENT_STATUS: Record<
   string,
-  { label: string; tone: Tone; hint: string }
+  {
+    label: string;
+    tone: Tone;
+    hint: string;
+  }
 > = {
   AKTIF: {
     label: "Aktif",
@@ -401,7 +482,6 @@ export const RESIDENT_STATUS_ORDER = [
   "TIDAK_DIKENAL",
 ] as const;
 
-/** Tingkat pendidikan terakhir, as recorded on the KTP / kartu keluarga. */
 export const EDUCATION_LEVEL: Record<string, string> = {
   "Tidak/Belum Sekolah": "Tidak/Belum Sekolah",
   "SD/Sederajat": "SD/Sederajat",
@@ -414,7 +494,6 @@ export const EDUCATION_LEVEL: Record<string, string> = {
 
 export const EDUCATION_LEVEL_ORDER = Object.keys(EDUCATION_LEVEL);
 
-/** Status hubungan dalam kartu keluarga (`residents.familyRelation`). */
 export const FAMILY_RELATION: Record<string, string> = {
   "KEPALA KELUARGA": "Kepala Keluarga",
   ISTRI: "Istri",
@@ -431,7 +510,6 @@ export const FAMILY_RELATION: Record<string, string> = {
 
 export const FAMILY_RELATION_ORDER = Object.keys(FAMILY_RELATION);
 
-/** Ekonomi stratum recorded for social-assistance mapping. */
 export const WELFARE_CLASS_TONE: Record<string, Tone> = {
   "Pra-Sejahtera": "rejected",
   "Sejahtera I": "pending",

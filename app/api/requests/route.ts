@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { DomainError, createLetterRequest } from "@/db/commands";
 import { getVillageProfile, listLetterRequests } from "@/db/queries";
 import { requireResidentSession, requireStaffSession } from "@/lib/auth/guard";
-import { deleteAttachments, saveAttachment } from "@/lib/attachments";
+import { deleteAttachments, saveUpload } from "@/lib/attachments";
 import { letterRequestDraftSchema, parseQueueQuery } from "@/lib/validators";
 
 import { parseJsonField, parseMultipartBody, withApi } from "../_lib/respond";
@@ -65,10 +65,11 @@ export async function POST(request: Request) {
       for (const file of files) {
         const manifest = draft.attachments.find((a) => a.docKey === file.docKey);
         if (!manifest) continue;
-        const { storageKey } = await saveAttachment({
+        const { storageKey } = await saveUpload({
           villageId: village.id,
-          requestId,
+          scope: { collection: "requests", id: requestId },
           docKey: file.docKey,
+          name: file.fileName ?? `${file.docKey.toLowerCase().replace(/_/g, "-")}.jpg`,
           mimeType: file.mimeType,
           data: file.data,
         });

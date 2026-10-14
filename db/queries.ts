@@ -223,6 +223,9 @@ export type NotificationEntry = {
   severity: string;
   href: string | null;
   readAt: string | null;
+  subject_type: string;
+  subject_id: string;
+  subject_ref: string;
   createdAt: string;
 };
 
@@ -1041,6 +1044,7 @@ export async function getActivityFeed(
   return result.rows;
 }
 
+
 export async function getNotifications(
   villageId: string,
   staffId: string | null,
@@ -1048,11 +1052,24 @@ export async function getNotifications(
 ): Promise<NotificationEntry[]> {
   const db = await getDb();
   const result = await db.execute<NotificationEntry>(sql`
-    select id, title, body, severity, href, read_at as "readAt", created_at as "createdAt"
-    from notifications
-    where village_id = ${villageId}
-      and (recipient_staff_id is null or recipient_staff_id = ${staffId})
-    order by (read_at is null) desc, created_at desc
+    select
+      n.id,
+      n.title,
+      n.body,
+      n.severity,
+      n.href,
+      coalesce(nr.read_at, n.read_at) as "readAt",
+      n.created_at as "createdAt",
+      n.subject_type,
+      n.subject_id,
+      n.subject_ref
+    from notifications n
+    left join notification_reads nr
+      on nr.notification_id = n.id
+      and nr.staff_id = ${staffId ?? "null"}
+    where n.village_id = ${villageId}
+      and (n.recipient_staff_id is null or n.recipient_staff_id = ${staffId ?? "null"})
+    order by (n.read_at is null) desc, n.created_at desc
     limit ${limit}
   `);
   return result.rows;
@@ -2464,6 +2481,9 @@ export type ResidentAnnouncementEntry = {
   publishAt: string | null;
   createdAt: string;
   readAt: string | null;
+  subject_type: string;
+  subject_id: string;
+  subject_ref: string;
 };
 
 export type ResidentAnnouncementFeed = {

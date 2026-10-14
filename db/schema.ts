@@ -741,9 +741,13 @@ export const notifications = pgTable(
     }),
     title: varchar("title", { length: 160 }).notNull(),
     body: varchar("body", { length: 320 }),
-    severity: varchar("severity", { length: 16 }).notNull().default("INFO"), 
+    severity: varchar("severity", { length: 16 }).notNull().default("INFO"),
     href: text("href"),
     readAt: timestamp("read_at", { withTimezone: true }),
+    subjectType: varchar("subject_type", { length: 40 }),
+    subjectId: uuid("subject_id"),
+    subjectRef: varchar("subject_ref", { length: 40 }),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
