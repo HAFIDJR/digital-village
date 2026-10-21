@@ -17,6 +17,8 @@ export type RegistryState = {
   pageSize: number;
   /** Resident opened in the detail drawer, or null. */
   selectedId: string | null;
+  /** Kartu Keluarga opened in the family detail sheet, or null. */
+  selectedFamilyId: string | null;
 };
 
 export const initialRegistryState: RegistryState = {
@@ -29,6 +31,7 @@ export const initialRegistryState: RegistryState = {
   // 25 rows: a registry lookup is usually a scroll-and-scan, not a single find.
   pageSize: 25,
   selectedId: null,
+  selectedFamilyId: null,
 };
 
 function resetPaging(state: RegistryState) {
@@ -85,6 +88,9 @@ const registrySlice = createSlice({
     },
     residentSelected(state, action: PayloadAction<string | null>) {
       state.selectedId = action.payload;
+    },
+    familySelected(state, action: PayloadAction<string | null>) {
+      state.selectedFamilyId = action.payload;
     },
   },
 });
