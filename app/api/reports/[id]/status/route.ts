@@ -22,6 +22,7 @@ export async function POST(
       staffId: officer.id,
       status: payload.status,
       note: payload.note,
+      reason: payload.reason,
     });
 
     return {
@@ -29,6 +30,7 @@ export async function POST(
       ticket: report.ticket,
       status: report.status,
       resolvedAt: report.resolvedAt,
+      rejectionReason: report.rejectionReason,
       responseCount: report.responseCount,
     };
   });

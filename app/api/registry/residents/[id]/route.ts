@@ -1,4 +1,4 @@
-import { DomainError, updateResident } from "@/db/commands";
+import { DomainError, deleteResident, updateResident } from "@/db/commands";
 import { getVillageProfile } from "@/db/queries";
 import { requireStaffCapability } from "@/lib/auth/guard";
 import { residentUpdateSchema } from "@/lib/validators";
@@ -42,5 +42,32 @@ export async function PATCH(
         documentsVerified: resident.documentsVerified,
       },
     };
+  });
+}
+/**
+ * Permanently removes a resident. Blocked with 409 when the resident still
+ * has letter requests or reports — archive them or record a mutation first.
+ */
+export async function DELETE(
+  _request: Request,
+  ctx: RouteContext<"/api/registry/residents/[id]">,
+) {
+  const { id } = await ctx.params;
+
+  return withApi(async () => {
+    const { officer } = await requireStaffCapability("manageRegistry");
+
+    const village = await getVillageProfile();
+    if (!village) {
+      throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
+    }
+
+    const deleted = await deleteResident({
+      villageId: village.id,
+      staffId: officer.id,
+      residentId: id,
+    });
+
+    return { ok: true, resident: deleted };
   });
 }
