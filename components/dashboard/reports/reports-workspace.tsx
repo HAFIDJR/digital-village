@@ -13,7 +13,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelHeader } from "@/components/ui/primitives";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { REPORT_CATEGORY, REPORT_SORT_LABEL, TONE_CLASSES } from "@/lib/domain";
+import { REPORT_CATEGORY, REPORT_SORT_LABEL } from "@/lib/domain";
 import { formatNumber, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { errorMessage, useListReportsQuery } from "@/store/api";
@@ -23,7 +23,6 @@ import {
   reportsActions,
   type ReportCategoryFilter,
 } from "@/store/reports-slice";
-import type { ReportPage } from "@/db/queries";
 
 import { QueryErrorState } from "../feedback";
 import { useNow } from "../now-context";
@@ -45,18 +44,30 @@ import { ReportDrawer } from "./report-drawer";
 import { ReportSummaryPanel } from "./report-summary";
 import { ReportTable } from "./report-table";
 
-export function ReportsWorkspace({
-  variant = "landing",
-  eyebrow,
-}: {
-  variant?: "landing" | "register";
-  eyebrow?: string;
-}) {
+/**
+ * The citizen-report register — the only home of the reports list, at
+ * `/laporan`. The dashboard landing links here instead of embedding it.
+ * Notification deep links (`/laporan?report=<id>`) land on the exact report:
+ * the id doubles as the search term (the server filter matches report ids)
+ * and the drawer opens on the selected row.
+ */
+export function ReportsWorkspace() {
   const dispatch = useAppDispatch();
   const filters = useAppSelector((state) => state.reports);
   const filterCount = useAppSelector((state) => activeReportFilterCount(state.reports));
   const searchRef = React.useRef<HTMLInputElement>(null);
   const now = useNow();
+
+  // Consume `?report=<id>` once on mount, then clean the URL. Reading
+  // `window.location` keeps the page free of a Suspense boundary requirement.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const reportId = params.get("report");
+    if (!reportId) return;
+    dispatch(reportsActions.searchChanged(reportId));
+    dispatch(reportsActions.reportSelected(reportId));
+    window.history.replaceState(null, "", window.location.pathname);
+  }, [dispatch]);
 
   const queryArgs = React.useMemo(
     () => ({
@@ -112,11 +123,9 @@ export function ReportsWorkspace({
     return (
       <>
         <PageHeader
-          eyebrow={eyebrow}
+          eyebrow="Layanan Publik"
           icon={Megaphone}
-          title={
-            variant === "landing" ? "Laporan & Aspirasi Warga" : "Register Laporan Warga"
-          }
+          title="Register Laporan Warga"
           description="Pusat penerimaan aduan, aspirasi, dan laporan warga Desa Sukamaju."
         />
         <QueryErrorState
@@ -130,21 +139,17 @@ export function ReportsWorkspace({
 
   return (
     <>
-      {variant === "landing" ? (
-        <LandingBand data={data} now={now} loading={isLoading} onRefresh={() => refetch()} refreshing={isFetching} />
-      ) : (
-        <PageHeader
-          eyebrow={eyebrow ?? "Layanan Publik"}
-          icon={Megaphone}
-          title="Register Laporan Warga"
-          description="Seluruh laporan dan aspirasi warga yang tercatat di desa, lengkap dengan status penanganan dan riwayat tanggapan."
-          meta={
-            <span className="tnum text-2xs text-fg-subtle">
-              {formatNumber(data?.summary.total ?? 0)} laporan tercatat
-            </span>
-          }
-        />
-      )}
+      <PageHeader
+        eyebrow="Layanan Publik"
+        icon={Megaphone}
+        title="Register Laporan Warga"
+        description="Seluruh laporan dan aspirasi warga yang tercatat di desa, lengkap dengan status penanganan dan riwayat tanggapan."
+        meta={
+          <span className="tnum text-2xs text-fg-subtle">
+            {formatNumber(data?.summary.total ?? 0)} laporan tercatat
+          </span>
+        }
+      />
 
       <StatStrip>
         <StatCard
@@ -201,19 +206,6 @@ export function ReportsWorkspace({
           }}
         />
       </StatStrip>
-
-      {variant === "landing" ? (
-        <ReportSummaryPanel
-          data={data}
-          layout="split"
-          loading={isLoading}
-          activeCategories={filters.categories}
-          activeStatuses={filters.statuses}
-          onCategorySelect={(category) =>
-            dispatch(reportsActions.categoriesReplaced([category as ReportCategoryFilter]))
-          }
-        />
-      ) : null}
 
       <div className="grid gap-3.5">
         <Panel className="min-w-0">
@@ -416,18 +408,16 @@ export function ReportsWorkspace({
 
       </div>
 
-      {variant === "register" ? (
-        <ReportSummaryPanel
-          data={data}
-          layout="split"
-          loading={isLoading}
-          activeCategories={filters.categories}
-          activeStatuses={filters.statuses}
-          onCategorySelect={(category) =>
-            dispatch(reportsActions.categoriesReplaced([category as ReportCategoryFilter]))
-          }
-        />
-      ) : null}
+      <ReportSummaryPanel
+        data={data}
+        layout="split"
+        loading={isLoading}
+        activeCategories={filters.categories}
+        activeStatuses={filters.statuses}
+        onCategorySelect={(category) =>
+          dispatch(reportsActions.categoriesReplaced([category as ReportCategoryFilter]))
+        }
+      />
 
       <ReportDrawer
         report={selectedRow}
@@ -437,98 +427,3 @@ export function ReportsWorkspace({
   );
 }
 
-
-function LandingBand({
-  data,
-  now,
-  loading,
-  onRefresh,
-  refreshing,
-}: {
-  data?: ReportPage;
-  now: number;
-  loading: boolean;
-  onRefresh: () => void;
-  refreshing: boolean;
-}) {
-  const summary = data?.summary;
-
-  return (
-    <div className="relative overflow-hidden rounded-lg border border-ink bg-ink text-white">
-      <div aria-hidden className="absolute inset-y-0 left-0 w-0.75 bg-civic" />
-      <div className="relative flex flex-wrap items-start justify-between gap-3 px-4 py-3.5">
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/55">
-            Dashboard Operator &amp; Perangkat Desa
-          </p>
-          <h1 className="mt-1 font-display text-lg font-bold tracking-[-0.02em] text-white">
-            Laporan &amp; Aspirasi Warga
-          </h1>
-          <p className="mt-1 max-w-2xl text-2xs leading-4 text-white/70">
-            Seluruh aduan dan aspirasi warga Desa Sukamaju dalam satu daftar kerja: status
-            penanganan, tanggapan petugas, dan sebaran per dusun.
-          </p>
-
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            <BandChip
-              tone="pending"
-              label="Baru"
-              value={loading ? "—" : formatNumber(summary?.newCount ?? 0)}
-            />
-            <BandChip
-              tone="progress"
-              label="Sedang Dikerjakan"
-              value={loading ? "—" : formatNumber(summary?.inProgress ?? 0)}
-            />
-            <BandChip
-              tone="approved"
-              label="Selesai"
-              value={loading ? "—" : formatNumber(summary?.resolved ?? 0)}
-            />
-            <BandChip
-              tone="neutral"
-              label="Total"
-              value={loading ? "—" : formatNumber(summary?.total ?? 0)}
-            />
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          {summary?.lastSubmittedAt ? (
-            <span className="hidden text-[10px] text-white/60 sm:block">
-              Laporan terakhir {formatRelative(summary.lastSubmittedAt, now)}
-            </span>
-          ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onRefresh}
-            disabled={refreshing}
-            className="border border-white/15 bg-white/10 text-white hover:border-white/25 hover:bg-white/15 hover:text-white"
-          >
-            <RefreshCw className={cn(refreshing && "animate-spin")} aria-hidden />
-            {refreshing ? "Menyegarkan…" : "Segarkan"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BandChip({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "pending" | "progress" | "approved" | "neutral";
-}) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-sm border border-white/12 bg-white/[0.07] px-2 py-1">
-      <span className={cn("size-1.5 rounded-full", TONE_CLASSES[tone].dot)} aria-hidden />
-      <span className="text-[10px] font-medium text-white/60">{label}</span>
-      <span className="tnum font-mono text-2xs font-semibold text-white">{value}</span>
-    </span>
-  );
-}

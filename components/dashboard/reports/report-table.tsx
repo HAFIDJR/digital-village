@@ -1,6 +1,6 @@
 "use client";
 
-import { MapPin, MessageSquare, UserCheck } from "lucide-react";
+import { MapPin, MessageSquare, Paperclip, UserCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { REPORT_CATEGORY, REPORT_STATUS, PRIORITY, TONE_CLASSES } from "@/lib/domain";
@@ -130,6 +130,16 @@ export function ReportTable({
                           size="sm"
                         >
                           {priority.label}
+                        </Badge>
+                      ) : null}
+                      {row.attachmentCount > 0 ? (
+                        <Badge
+                          variant="outline"
+                          size="sm"
+                          title={`${row.attachmentCount} foto terlampir`}
+                        >
+                          <Paperclip className="size-3" aria-hidden />
+                          <span className="tnum">{row.attachmentCount}</span>
                         </Badge>
                       ) : null}
                     </span>
