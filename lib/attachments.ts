@@ -19,6 +19,15 @@ export type StoredAttachmentFile = {
   sizeBytes: number;
 };
 
+/**
+ * Where an uploaded file belongs: letter-request scans or citizen-report
+ * photos. The produced key for `requests` is byte-identical to the historical
+ * layout so already-stored scans keep resolving after the refactor.
+ */
+export type AttachmentScope =
+  | { collection: "requests"; id: string }
+  | { collection: "reports"; id: string };
+
 function extensionFor(mimeType: string) {
   return EXTENSIONS[mimeType] ?? ".bin";
 }
@@ -31,6 +40,31 @@ function resolveKey(storageKey: string) {
   return absolute;
 }
 
+export async function saveUpload(input: {
+  villageId: string;
+  scope: AttachmentScope;
+  name: string;
+  mimeType: string;
+  data: Uint8Array;
+}): Promise<StoredAttachmentFile> {
+  const safeName = input.name
+    .replace(/[^A-Za-z0-9._-]/g, "")
+    .slice(0, 60)
+    .toLowerCase();
+  const name = `${safeName}-${randomBytes(6).toString("hex")}${extensionFor(input.mimeType)}`;
+  const storageKey = `${ATTACHMENT_KEY_PREFIX}/villages/${input.villageId}/${input.scope.collection}/${input.scope.id}/${name}`;
+
+  const absolute = resolveKey(storageKey);
+  await fs.mkdir(path.dirname(absolute), { recursive: true });
+  await fs.writeFile(absolute, input.data);
+
+  return { storageKey, sizeBytes: input.data.byteLength };
+}
+
+/**
+ * Legacy helper for letter-request scans: the document key names the file
+ * (`ktp-<random>.jpg`) exactly as it always has.
+ */
 export async function saveAttachment(input: {
   villageId: string;
   requestId: string;
@@ -39,14 +73,13 @@ export async function saveAttachment(input: {
   data: Uint8Array;
 }): Promise<StoredAttachmentFile> {
   const docKey = input.docKey.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
-  const name = `${docKey.toLowerCase().replace(/_/g, "-")}-${randomBytes(6).toString("hex")}${extensionFor(input.mimeType)}`;
-  const storageKey = `${ATTACHMENT_KEY_PREFIX}/villages/${input.villageId}/requests/${input.requestId}/${name}`;
-
-  const absolute = resolveKey(storageKey);
-  await fs.mkdir(path.dirname(absolute), { recursive: true });
-  await fs.writeFile(absolute, input.data);
-
-  return { storageKey, sizeBytes: input.data.byteLength };
+  return saveUpload({
+    villageId: input.villageId,
+    scope: { collection: "requests", id: input.requestId },
+    name: docKey.toLowerCase().replace(/_/g, "-"),
+    mimeType: input.mimeType,
+    data: input.data,
+  });
 }
 
 /** Reads the bytes behind a storage key, or null when the file is missing. */

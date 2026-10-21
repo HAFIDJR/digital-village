@@ -163,6 +163,9 @@ export const ACTIVITY_KIND: Record<
   KELUAR_LOG: { label: "Keluar Sistem", tone: "neutral" },
   AKTIVASI_TTD: { label: "Aktivasi Sertifikat TTD", tone: "approved" },
   KEAMANAN_AKUN: { label: "Keamanan Akun", tone: "rejected" },
+  PERUBAHAN_DATA: { label: "Perubahan Data", tone: "progress" },
+  PENGHAPUSAN_DATA: { label: "Penghapusan Data", tone: "rejected" },
+  PERUBAHAN_WILAYAH: { label: "Perubahan Wilayah", tone: "pending" },
 };
 
 export const STAFF_ROLE: Record<StaffRole, string> = {
@@ -181,6 +184,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: boolean;
     publish: boolean;
     manageRegistry: boolean;
+    manageArea: boolean;
     manageSettings: boolean;
   }
 > = {
@@ -189,6 +193,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: false,
     publish: true,
     manageRegistry: true,
+    manageArea: true,
     manageSettings: true,
   },
   SEKDES: {
@@ -196,6 +201,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: false,
     publish: true,
     manageRegistry: true,
+    manageArea: true,
     manageSettings: true,
   },
   KASI_PELAYANAN: {
@@ -203,6 +209,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: false,
     publish: true,
     manageRegistry: true,
+    manageArea: false,
     manageSettings: false,
   },
   KAUR_TU: {
@@ -210,6 +217,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: false,
     publish: true,
     manageRegistry: true,
+    manageArea: false,
     manageSettings: false,
   },
   KADES: {
@@ -217,6 +225,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: true,
     publish: true,
     manageRegistry: false,
+    manageArea: true,
     manageSettings: true,
   },
   KADUS: {
@@ -224,6 +233,7 @@ export const ROLE_CAPABILITIES: Record<
     sign: false,
     publish: false,
     manageRegistry: false,
+    manageArea: false,
     manageSettings: false,
   },
 };
@@ -234,6 +244,23 @@ export const REPORT_STATUS: Record<string, { label: string; tone: Tone }> = {
   RESOLVED: { label: "Selesai", tone: "approved" },
   REJECTED: { label: "Ditolak", tone: "rejected" },
 };
+
+/**
+ * "Belum dilaksanakan oleh perangkat desa" — a report stays editable by its
+ * reporter only while it is brand new, has no officer response and no assigned
+ * handler. Shared by the portal UI and the commands layer so both agree.
+ */
+export function isReportEditable(report: {
+  status: string;
+  responseCount: number;
+  handledByStaffId: string | null;
+}): boolean {
+  return (
+    report.status === "NEW" &&
+    report.responseCount === 0 &&
+    report.handledByStaffId === null
+  );
+}
 
 export const REPORT_CATEGORY: Record<string, string> = {
   INFRASTRUKTUR: "Infrastruktur",

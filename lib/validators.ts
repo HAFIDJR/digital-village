@@ -220,6 +220,43 @@ export function parseReportQuery(
   });
 }
 
+/** Foto laporan warga: JPG/PNG hasil kompresi peramban, tanpa PDF. */
+export const REPORT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png"] as const;
+/** Server ceiling — the browser client targets 400 KB per photo. */
+export const MAX_REPORT_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_REPORT_IMAGES = 4;
+
+export const reportAttachmentManifestSchema = z.object({
+  fileName: z
+    .string({ error: "Nama berkas wajib diisi" })
+    .trim()
+    .min(1, "Nama berkas wajib diisi")
+    .max(200, "Nama berkas maksimal 200 karakter"),
+  mimeType: z
+    .string({ error: "Tipe berkas wajib diisi" })
+    .trim()
+    .refine(
+      (value) => (REPORT_IMAGE_MIME_TYPES as readonly string[]).includes(value),
+      "Format foto harus JPG atau PNG",
+    ),
+  sizeBytes: z
+    .number({ error: "Ukuran berkas tidak valid" })
+    .int("Ukuran berkas tidak valid")
+    .positive("Foto kosong atau tidak dapat dibaca")
+    .max(MAX_REPORT_IMAGE_BYTES, "Ukuran foto maksimal 5 MB"),
+  width: z.number().int().max(8000).optional(),
+  height: z.number().int().max(8000).optional(),
+  caption: z
+    .string()
+    .trim()
+    .max(160, "Keterangan foto maksimal 160 karakter")
+    .optional(),
+});
+
+export type ReportAttachmentManifest = z.infer<
+  typeof reportAttachmentManifestSchema
+>;
+
 export const reportDraftSchema = z.object({
   category: reportCategorySchema,
   subject: z
@@ -245,20 +282,64 @@ export const reportDraftSchema = z.object({
       phone: phoneSchema.optional(),
     })
     .optional(),
+  attachments: z.array(reportAttachmentManifestSchema).max(MAX_REPORT_IMAGES, "Maksimal 4 foto per laporan").default([]),
 });
 
 export type ReportDraft = z.infer<typeof reportDraftSchema>;
 
-export const reportAdvanceSchema = z.object({
-  status: z.enum(["IN_PROGRESS", "RESOLVED", "REJECTED"], {
-    error: "Status tindak lanjut tidak dikenal",
-  }),
-  note: z
-    .string()
-    .trim()
-    .max(500, "Catatan tindak lanjut maksimal 500 karakter")
-    .optional(),
-});
+/** Perubahan laporan oleh pelapor selama belum ditindaklanjuti perangkat desa. */
+export const reportUpdateSchema = z
+  .object({
+    category: reportCategorySchema.optional(),
+    subject: z
+      .string()
+      .trim()
+      .min(8, "Judul laporan minimal 8 karakter")
+      .max(200, "Judul laporan maksimal 200 karakter")
+      .optional(),
+    body: z
+      .string()
+      .trim()
+      .min(20, "Ceritakan kejadian minimal 20 karakter agar petugas dapat menindaklanjuti")
+      .max(2000, "Isi laporan maksimal 2.000 karakter")
+      .optional(),
+    neighborhoodId: uuidSchema.optional(),
+    priority: prioritySchema.optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type ReportUpdate = z.infer<typeof reportUpdateSchema>;
+
+export const reportAdvanceSchema = z
+  .object({
+    status: z.enum(["IN_PROGRESS", "RESOLVED", "REJECTED"], {
+      error: "Status tindak lanjut tidak dikenal",
+    }),
+    note: z
+      .string()
+      .trim()
+      .max(500, "Catatan tindak lanjut maksimal 500 karakter")
+      .optional(),
+    /** Alasan penolakan — wajib saat status REJECTED, terlihat oleh pelapor. */
+    reason: z
+      .string()
+      .trim()
+      .min(10, "Alasan penolakan minimal 10 karakter")
+      .max(500, "Alasan penolakan maksimal 500 karakter")
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.status === "REJECTED" && !value.reason) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "Alasan penolakan wajib diisi.",
+      });
+    }
+  });
 
 export type ReportAdvance = z.infer<typeof reportAdvanceSchema>;
 
@@ -397,6 +478,34 @@ export const familyDraftSchema = z.object({
 
 export type FamilyDraft = z.infer<typeof familyDraftSchema>;
 
+/**
+ * Explicit optional fields (no `.partial()` of the draft) so defaults never
+ * leak in and the "no data changed" refine sees a truly empty object.
+ */
+export const familyUpdateSchema = z
+  .object({
+    kkNumber: kkSchema.optional(),
+    headName: fullNameSchema.optional(),
+    neighborhoodId: uuidSchema.optional(),
+    address: addressSchema.optional(),
+    welfareClass: z
+      .string()
+      .trim()
+      .min(3, "Klasifikasi kesejahteraan minimal 3 karakter")
+      .max(32, "Klasifikasi kesejahteraan maksimal 32 karakter")
+      .optional(),
+    memberIds: z
+      .array(uuidSchema)
+      .max(20, "Anggota kartu keluarga maksimal 20 orang")
+      .optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type FamilyUpdate = z.infer<typeof familyUpdateSchema>;
+
 export const residentAccountDraftSchema = z.object({
   residentId: uuidSchema,
   password: z
@@ -406,6 +515,129 @@ export const residentAccountDraftSchema = z.object({
 });
 
 export type ResidentAccountDraft = z.infer<typeof residentAccountDraftSchema>;
+
+export const residentAccountResetSchema = z.object({
+  residentId: uuidSchema,
+  password: z
+    .string({ error: "Kata sandi baru wajib diisi" })
+    .min(8, "Kata sandi minimal 8 karakter")
+    .max(128, "Kata sandi maksimal 128 karakter"),
+});
+
+export type ResidentAccountReset = z.infer<typeof residentAccountResetSchema>;
+
+export const residentAccountStatusSchema = z.object({
+  residentId: uuidSchema,
+  active: z.boolean({ error: "Status akun tidak valid" }),
+});
+
+export type ResidentAccountStatus = z.infer<typeof residentAccountStatusSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Wilayah administratif: Dusun (hamlets) dan RT/RW (neighborhoods)            */
+/* -------------------------------------------------------------------------- */
+
+export const hamletCodeSchema = z
+  .string({ error: "Kode dusun wajib diisi" })
+  .trim()
+  .min(1, "Kode dusun wajib diisi")
+  .max(16, "Kode dusun maksimal 16 karakter")
+  .transform((value) => value.toUpperCase())
+  .pipe(
+    z.string().regex(
+      /^[A-Z0-9-]{1,16}$/,
+      "Kode dusun hanya boleh huruf kapital, angka, dan tanda hubung",
+    ),
+  );
+
+export const hamletDraftSchema = z.object({
+  name: z
+    .string({ error: "Nama dusun wajib diisi" })
+    .trim()
+    .min(3, "Nama dusun minimal 3 karakter")
+    .max(80, "Nama dusun maksimal 80 karakter"),
+  code: hamletCodeSchema,
+  headName: z
+    .string()
+    .trim()
+    .max(120, "Nama kepala dusun maksimal 120 karakter")
+    .optional(),
+});
+
+export type HamletDraft = z.infer<typeof hamletDraftSchema>;
+
+export const hamletUpdateSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(3, "Nama dusun minimal 3 karakter")
+      .max(80, "Nama dusun maksimal 80 karakter")
+      .optional(),
+    code: hamletCodeSchema.optional(),
+    headName: z
+      .string()
+      .trim()
+      .max(120, "Nama kepala dusun maksimal 120 karakter")
+      .nullable()
+      .optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type HamletUpdate = z.infer<typeof hamletUpdateSchema>;
+
+export const neighborhoodDraftSchema = z.object({
+  hamletId: uuidSchema,
+  rt: z.coerce
+    .number({ error: "Nomor RT harus berupa angka" })
+    .int("Nomor RT harus bilangan bulat")
+    .min(1, "Nomor RT minimal 1")
+    .max(99, "Nomor RT maksimal 99"),
+  rw: z.coerce
+    .number({ error: "Nomor RW harus berupa angka" })
+    .int("Nomor RW harus bilangan bulat")
+    .min(1, "Nomor RW minimal 1")
+    .max(99, "Nomor RW maksimal 99"),
+  headName: z
+    .string()
+    .trim()
+    .max(120, "Nama ketua RT maksimal 120 karakter")
+    .optional(),
+});
+
+export type NeighborhoodDraft = z.infer<typeof neighborhoodDraftSchema>;
+
+export const neighborhoodUpdateSchema = z
+  .object({
+    hamletId: uuidSchema.optional(),
+    rt: z.coerce
+      .number()
+      .int("Nomor RT harus bilangan bulat")
+      .min(1, "Nomor RT minimal 1")
+      .max(99, "Nomor RT maksimal 99")
+      .optional(),
+    rw: z.coerce
+      .number()
+      .int("Nomor RW harus bilangan bulat")
+      .min(1, "Nomor RW minimal 1")
+      .max(99, "Nomor RW maksimal 99")
+      .optional(),
+    headName: z
+      .string()
+      .trim()
+      .max(120, "Nama ketua RT maksimal 120 karakter")
+      .nullable()
+      .optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type NeighborhoodUpdate = z.infer<typeof neighborhoodUpdateSchema>;
 
 export const globalSearchSchema = z.object({
   q: z
@@ -554,6 +786,44 @@ export const announcementDraftSchema = z.object({
 });
 
 export type AnnouncementDraft = z.infer<typeof announcementDraftSchema>;
+
+/**
+ * Perubahan pengumuman setelah terbit. Field opsional ditulis eksplisit agar
+ * default draf tidak ikut terkirim sebagai "perubahan".
+ */
+export const announcementUpdateSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(8, "Judul minimal 8 karakter")
+      .max(200, "Judul maksimal 200 karakter")
+      .optional(),
+    body: z
+      .string()
+      .trim()
+      .min(20, "Isi pengumuman minimal 20 karakter")
+      .max(4000, "Isi pengumuman maksimal 4.000 karakter")
+      .optional(),
+    channel: announcementChannelSchema.optional(),
+    status: announcementStatusSchema.optional(),
+    priority: prioritySchema.optional(),
+    pinned: z.boolean().optional(),
+    audience: z
+      .string()
+      .trim()
+      .min(3, "Sasaran pembaca minimal 3 karakter")
+      .max(80, "Sasaran pembaca maksimal 80 karakter")
+      .optional(),
+    publishAt: z.coerce.date().optional(),
+    expiresAt: z.coerce.date().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "Tidak ada data yang diubah",
+    path: ["_form"],
+  });
+
+export type AnnouncementUpdate = z.infer<typeof announcementUpdateSchema>;
 
 export const residentAnnouncementReadSchema = z.object({
   ids: z.array(uuidSchema).max(50).optional(),
