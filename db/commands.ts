@@ -6,22 +6,33 @@ import { getDb } from "./client";
 import * as t from "./schema";
 import type {
   AnnouncementDraft,
+  AnnouncementUpdate,
   FamilyDraft,
+  FamilyUpdate,
+  HamletDraft,
+  HamletUpdate,
   LetterAttachmentManifest,
   LetterRequestDraft,
+  NeighborhoodDraft,
+  NeighborhoodUpdate,
+  ReportAttachmentManifest,
   ReportDraft,
+  ReportUpdate,
   ResidentAccountDraft,
   ResidentDraft,
   ResidentUpdate,
   VerifyRequestInput,
 } from "@/lib/validators";
 import {
+  ANNOUNCEMENT_STATUS,
   MUTATION_KIND,
   REPORT_CATEGORY,
   REPORT_STATUS,
   REQUEST_STATUS,
+  isReportEditable,
   notificationSeverity,
 } from "@/lib/domain";
+import { MAX_REPORT_IMAGES } from "@/lib/validators";
 import { initialsOf } from "@/lib/format";
 import { verifyPassword } from "@/lib/auth/password";
 import { hashPassword } from "@/lib/auth/password";
@@ -136,7 +147,16 @@ async function syncFamilyMemberCount(tx: DbOrTx, familyId: string) {
 async function notifyOfficers(
   tx: DbOrTx,
   villageId: string,
-  entry: { title: string; body: string; severity: string; href: string },
+  entry: {
+    title: string;
+    body: string;
+    severity: string;
+    href: string;
+    subjectType?: string | null;
+    subjectId?: string | null;
+    subjectRef?: string | null;
+    meta?: Record<string, unknown>;
+  },
 ) {
   await tx.insert(t.notifications).values({
     villageId,
@@ -145,6 +165,10 @@ async function notifyOfficers(
     body: entry.body,
     severity: entry.severity,
     href: entry.href,
+    subjectType: entry.subjectType ?? null,
+    subjectId: entry.subjectId ?? null,
+    subjectRef: entry.subjectRef ?? null,
+    meta: entry.meta ?? {},
   });
 }
 
@@ -405,7 +429,11 @@ export async function verifyLetterRequest(input: {
           title: `${request.ticket} siap ditandatangani`,
           body: `${letterType?.name ?? "Surat"} untuk ${request.applicantName} menunggu tanda tangan elektronik.`,
           severity: "WARNING",
-          href: `/?request=${request.id}`,
+          href: `/antrean?request=${request.id}`,
+          subjectType: "letter_request",
+          subjectId: request.id,
+          subjectRef: request.ticket,
+          meta: { letterType: letterType?.code ?? null },
         });
       }
     }
@@ -940,7 +968,11 @@ export async function createLetterRequest(input: {
       title: `${ticket} menunggu verifikasi`,
       body: `${letterType.name} diajukan ${resident.fullName} (${neighborhood.hamletName} · RT ${neighborhood.rt}/RW ${neighborhood.rw}).`,
       severity: "INFO",
-      href: "/antrean",
+      href: `/antrean?request=${request.id}`,
+      subjectType: "letter_request",
+      subjectId: request.id,
+      subjectRef: ticket,
+      meta: { letterType: letterType.code },
     });
 
     return request;
@@ -1034,6 +1066,172 @@ function slugifyAnnouncement(value: string) {
   );
 }
 
+async function loadAnnouncement(tx: DbOrTx, villageId: string, announcementId: string) {
+  const [row] = await tx
+    .select()
+    .from(t.announcements)
+    .where(
+      and(
+        eq(t.announcements.id, announcementId),
+        eq(t.announcements.villageId, villageId),
+      ),
+    )
+    .limit(1);
+  if (!row) throw new DomainError("Pengumuman tidak ditemukan", "ANNOUNCEMENT_NOT_FOUND", 404);
+  return row;
+}
+
+/**
+ * Edits an announcement after posting. The slug follows the title with the
+ * same de-duplication loop as publishing — excluding the row itself — and the
+ * original author stays the author; the editor lands in the audit meta.
+ */
+export async function updateAnnouncement(input: {
+  villageId: string;
+  staffId: string;
+  announcementId: string;
+  draft: AnnouncementUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const announcement = await loadAnnouncement(tx, input.villageId, input.announcementId);
+
+    const patch: Partial<t.NewAnnouncement> = { updatedAt: new Date() };
+    if (input.draft.title !== undefined) patch.title = input.draft.title;
+    if (input.draft.body !== undefined) {
+      patch.body = input.draft.body;
+      patch.excerpt = input.draft.body.slice(0, 300);
+    }
+    if (input.draft.channel !== undefined) patch.channel = input.draft.channel;
+    if (input.draft.priority !== undefined) patch.priority = input.draft.priority;
+    if (input.draft.pinned !== undefined) patch.pinned = input.draft.pinned;
+    if (input.draft.audience !== undefined) patch.audience = input.draft.audience;
+    if (input.draft.publishAt !== undefined) patch.publishAt = input.draft.publishAt;
+    if (input.draft.expiresAt !== undefined) patch.expiresAt = input.draft.expiresAt;
+
+    if (input.draft.status !== undefined && input.draft.status !== announcement.status) {
+      patch.status = input.draft.status;
+      // Publishing stamps the release time when nobody scheduled one.
+      if (input.draft.status === "TERBIT" && !announcement.publishAt && !input.draft.publishAt) {
+        patch.publishAt = new Date();
+      }
+    }
+
+    // A new title means a new slug — recomputed with the same collision loop,
+    // excluding this announcement so an edit never collides with itself.
+    if (input.draft.title !== undefined && input.draft.title !== announcement.title) {
+      const slugBase = slugifyAnnouncement(input.draft.title);
+      const existing = await tx
+        .select({ slug: t.announcements.slug })
+        .from(t.announcements)
+        .where(
+          and(
+            eq(t.announcements.villageId, input.villageId),
+            sql`${t.announcements.slug} like ${`${slugBase}%`}`,
+            sql`${t.announcements.id} <> ${announcement.id}`,
+          ),
+        );
+      const taken = new Set(existing.map((row) => row.slug));
+      let slug = slugBase;
+      let suffix = 2;
+      while (taken.has(slug)) {
+        slug = `${slugBase}-${suffix++}`;
+      }
+      patch.slug = slug;
+    }
+
+    const changedKeys = Object.keys(patch).filter(
+      (key) => key !== "updatedAt" && key !== "excerpt" && key !== "slug",
+    );
+    if (!changedKeys.length) {
+      throw new DomainError("Tidak ada data yang diubah", "VALIDATION_ERROR", 422);
+    }
+
+    const [updated] = await tx
+      .update(t.announcements)
+      .set(patch)
+      .where(eq(t.announcements.id, announcement.id))
+      .returning();
+    if (!updated) throw new DomainError("Pengumuman tidak ditemukan", "ANNOUNCEMENT_NOT_FOUND", 404);
+
+    const statusLabel = ANNOUNCEMENT_STATUS[updated.status]?.label ?? updated.status;
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGUMUMAN",
+      summary: `Pengumuman "${updated.title}" diperbarui (status: ${statusLabel}).`,
+      subjectType: "announcement",
+      subjectId: updated.id,
+      subjectRef: null,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        changedFields: changedKeys,
+        status: updated.status,
+        channel: updated.channel,
+        editedBy: staff.id,
+      },
+    });
+
+    return updated;
+  });
+}
+
+/**
+ * Removes an announcement (reads cascade). Deleting a published one also tells
+ * the officers: it disappears from every public channel at once.
+ */
+export async function deleteAnnouncement(input: {
+  villageId: string;
+  staffId: string;
+  announcementId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const announcement = await loadAnnouncement(tx, input.villageId, input.announcementId);
+
+    await tx.delete(t.announcements).where(eq(t.announcements.id, announcement.id));
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGHAPUSAN_DATA",
+      summary: `Pengumuman "${announcement.title}" dihapus oleh ${staff.jobTitle}.`,
+      subjectType: "announcement",
+      subjectId: announcement.id,
+      subjectRef: null,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      // The village book keeps the full withdrawn content.
+      meta: {
+        title: announcement.title,
+        body: announcement.body,
+        channel: announcement.channel,
+        status: announcement.status,
+        viewCount: announcement.viewCount,
+      },
+    });
+
+    if (announcement.status === "TERBIT") {
+      await notifyOfficers(tx, input.villageId, {
+        title: "Pengumuman ditarik dari kanal publik",
+        body: `Pengumuman "${announcement.title}" ditarik dari kanal publik oleh ${staff.fullName}.`,
+        severity: "WARNING",
+        href: "/pengumuman",
+        subjectType: "announcement",
+        subjectId: announcement.id,
+        subjectRef: null,
+      });
+    }
+
+    return {
+      id: announcement.id,
+      title: announcement.title,
+      status: announcement.status,
+      wasPublished: announcement.status === "TERBIT",
+    };
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Notifications                                                               */
 /* -------------------------------------------------------------------------- */
@@ -1042,21 +1240,81 @@ export async function markNotificationsRead(villageId: string, staffId: string, 
   const db = await getDb();
 
   return db.transaction(async (tx) => {
-    const now = new Date();
-    const predicate = and(
-      eq(t.notifications.villageId, villageId),
-      eq(t.notifications.recipientStaffId, staffId),
-      sql`${t.notifications.readAt} is null`,
-      ids?.length ? inArray(t.notifications.id, ids) : sql`true`,
-    );
+    // Read state lives per officer in `notification_reads`, so a broadcast read
+    // by the Sekdes stays unread for the Kades. Legacy `read_at` on the row is
+    // only the seeded fallback and is kept via coalesce in the read model.
+    const visible = await tx
+      .select({ id: t.notifications.id })
+      .from(t.notifications)
+      .where(
+        and(
+          eq(t.notifications.villageId, villageId),
+          sql`(${t.notifications.recipientStaffId} is null or ${t.notifications.recipientStaffId} = ${staffId})`,
+          sql`not exists (
+            select 1 from notification_reads nr
+            where nr.notification_id = ${t.notifications.id} and nr.staff_id = ${staffId}
+          )`,
+          sql`${t.notifications.readAt} is null`,
+          ids?.length ? inArray(t.notifications.id, ids) : sql`true`,
+        ),
+      );
 
-    const updated = await tx
-      .update(t.notifications)
-      .set({ readAt: now })
-      .where(predicate)
-      .returning({ id: t.notifications.id });
+    const targets = visible.map((row) => row.id);
+    if (!targets.length) return { updated: 0 };
 
-    return { updated: updated.length };
+    const inserted = await tx
+      .insert(t.notificationReads)
+      .values(
+        targets.map((notificationId) => ({
+          villageId,
+          notificationId,
+          staffId,
+          readAt: new Date(),
+        })),
+      )
+      .onConflictDoNothing({
+        target: [t.notificationReads.notificationId, t.notificationReads.staffId],
+      })
+      .returning({ id: t.notificationReads.id });
+
+    return { updated: inserted.length };
+  });
+}
+
+/** Marks one notification read for the current officer only. */
+export async function markNotificationRead(villageId: string, staffId: string, notificationId: string) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const [notification] = await tx
+      .select({ id: t.notifications.id })
+      .from(t.notifications)
+      .where(
+        and(
+          eq(t.notifications.id, notificationId),
+          eq(t.notifications.villageId, villageId),
+          sql`(${t.notifications.recipientStaffId} is null or ${t.notifications.recipientStaffId} = ${staffId})`,
+        ),
+      )
+      .limit(1);
+    if (!notification) {
+      throw new DomainError("Notifikasi tidak ditemukan", "NOTIFICATION_NOT_FOUND", 404);
+    }
+
+    const inserted = await tx
+      .insert(t.notificationReads)
+      .values({
+        villageId,
+        notificationId: notification.id,
+        staffId,
+        readAt: new Date(),
+      })
+      .onConflictDoNothing({
+        target: [t.notificationReads.notificationId, t.notificationReads.staffId],
+      })
+      .returning({ id: t.notificationReads.id });
+
+    return { updated: inserted.length };
   });
 }
 
@@ -1122,11 +1380,16 @@ export async function markResidentAnnouncementsRead(input: {
  * Files a laporan/aspirasi from the resident portal (or from the loket counter
  * on somebody's behalf) and pings every officer with a broadcast notification.
  */
+
+/** Photos the route has already persisted; only the server knows the key. */
+type StoredReportAttachment = ReportAttachmentManifest & { storageKey: string };
+
 export async function createCitizenReport(input: {
   villageId: string;
   residentId: string | null;
   staffId?: string | null;
-  draft: ReportDraft;
+  draft: ReportDraft & { attachments: StoredReportAttachment[] };
+  reportId?: string;
 }) {
   const db = await getDb();
 
@@ -1172,6 +1435,7 @@ export async function createCitizenReport(input: {
     const [report] = await tx
       .insert(t.citizenReports)
       .values({
+        ...(input.reportId ? { id: input.reportId } : {}),
         ticket,
         villageId: input.villageId,
         reporterResidentId: resident?.id ?? null,
@@ -1186,9 +1450,25 @@ export async function createCitizenReport(input: {
         priority: input.draft.priority,
         handledByStaffId: null,
         responseCount: 0,
+        attachmentCount: input.draft.attachments.length,
         submittedAt,
       })
       .returning();
+
+    for (const file of input.draft.attachments) {
+      await tx.insert(t.reportAttachments).values({
+        reportId: report.id,
+        fileName: file.fileName,
+        storageKey: file.storageKey,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        width: file.width ?? null,
+        height: file.height ?? null,
+        caption: file.caption ?? null,
+        uploadedByResidentId: resident?.id ?? null,
+        uploadedAt: submittedAt,
+      });
+    }
 
     const categoryLabel =
       REPORT_CATEGORY[input.draft.category] ?? input.draft.category;
@@ -1219,6 +1499,7 @@ export async function createCitizenReport(input: {
         category: input.draft.category,
         priority: input.draft.priority,
         channel: staff ? "LOKET" : "PORTAL_WARGA",
+        attachments: input.draft.attachments.length,
       },
     });
 
@@ -1226,7 +1507,11 @@ export async function createCitizenReport(input: {
       title: `Laporan baru ${ticket} — ${categoryLabel}`,
       body: `${input.draft.subject} dilaporkan oleh ${reporter.name} (${location}).`,
       severity: notificationSeverity(input.draft.priority),
-      href: "/laporan",
+      href: `/laporan?report=${report.id}`,
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: ticket,
+      meta: { category: input.draft.category, attachments: input.draft.attachments.length },
     });
 
     return report;
@@ -1239,6 +1524,7 @@ export async function advanceReport(input: {
   staffId: string;
   status: "IN_PROGRESS" | "RESOLVED" | "REJECTED";
   note?: string;
+  reason?: string;
 }) {
   const db = await getDb();
 
@@ -1270,14 +1556,27 @@ export async function advanceReport(input: {
       );
     }
 
+    const reason = input.reason?.trim() || null;
+    if (input.status === "REJECTED" && !reason) {
+      throw new DomainError(
+        "Alasan penolakan wajib diisi.",
+        "REJECTION_REASON_REQUIRED",
+        422,
+      );
+    }
+
+    const now = new Date();
     const [report] = await tx
       .update(t.citizenReports)
       .set({
         status: input.status,
         handledByStaffId: staff.id,
-        resolvedAt: input.status === "RESOLVED" ? new Date() : null,
+        resolvedAt: input.status === "RESOLVED" ? now : null,
+        ...(input.status === "REJECTED"
+          ? { rejectionReason: reason, rejectedAt: now, rejectedByStaffId: staff.id }
+          : {}),
         responseCount: sql`${t.citizenReports.responseCount} + 1`,
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(eq(t.citizenReports.id, input.reportId))
       .returning();
@@ -1285,18 +1584,425 @@ export async function advanceReport(input: {
     if (!report) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
 
     await writeAudit(tx, input.villageId, {
-      kind: "PERSETUJUAN",
-      summary: `Laporan ${report.ticket} — "${report.subject}" ditandai ${input.status === "RESOLVED" ? "selesai" : input.status === "IN_PROGRESS" ? "sedang dikerjakan" : "ditolak"}.`,
+      kind: input.status === "REJECTED" ? "PENOLAKAN" : "PERSETUJUAN",
+      summary:
+        input.status === "REJECTED"
+          ? `Laporan ${report.ticket} — "${report.subject}" ditolak. Alasan: ${reason}.`
+          : `Laporan ${report.ticket} — "${report.subject}" ditandai ${input.status === "RESOLVED" ? "selesai" : "sedang dikerjakan"}.`,
       subjectType: "citizen_report",
       subjectId: report.id,
       subjectRef: report.ticket,
       actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
-      meta: { status: input.status, note: input.note ?? null },
+      meta: {
+        status: input.status,
+        note: input.note ?? null,
+        reason: input.status === "REJECTED" ? reason : null,
+      },
     });
+
+    if (input.status === "REJECTED") {
+      // The desk must know a report was closed with a written reason.
+      await notifyOfficers(tx, input.villageId, {
+        title: `Laporan ${report.ticket} ditolak`,
+        body: `"${report.subject}" ditutup oleh ${staff.fullName}. Alasan: ${reason}.`,
+        severity: "WARNING",
+        href: `/laporan?report=${report.id}`,
+        subjectType: "citizen_report",
+        subjectId: report.id,
+        subjectRef: report.ticket,
+        meta: { reason },
+      });
+    }
 
     return report;
   });
 }
+/* -------------------------------------------------------------------------- */
+/* Citizen reports — reporter self-service (portal warga)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Ownership + editability gate shared by every reporter self-service command:
+ * a report can only be touched by its reporter, and only while it is `NEW`
+ * with no officer response and no assigned handler.
+ */
+async function loadEditableOwnReport(
+  tx: DbOrTx,
+  villageId: string,
+  residentId: string,
+  reportId: string,
+) {
+  const [report] = await tx
+    .select()
+    .from(t.citizenReports)
+    .where(
+      and(
+        eq(t.citizenReports.id, reportId),
+        eq(t.citizenReports.villageId, villageId),
+      ),
+    )
+    .limit(1);
+  if (!report) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
+  if (report.reporterResidentId !== residentId) {
+    throw new DomainError(
+      "Laporan ini bukan milik Anda. Hanya pelapor yang dapat mengubah laporannya.",
+      "REPORT_NOT_OWNED",
+      403,
+    );
+  }
+  if (!isReportEditable(report)) {
+    throw new DomainError(
+      `Laporan ${report.ticket} sudah ditindaklanjuti petugas dan tidak dapat diubah. Sampaikan informasi tambahan melalui kantor desa.`,
+      "REPORT_ALREADY_HANDLED",
+      409,
+    );
+  }
+  return report;
+}
+
+/** Reporter edits their own untouched report (category/subject/body/lokasi). */
+export async function updateCitizenReport(input: {
+  villageId: string;
+  residentId: string;
+  reportId: string;
+  draft: ReportUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+    const report = await loadEditableOwnReport(tx, input.villageId, resident.id, input.reportId);
+
+    const neighborhood = input.draft.neighborhoodId
+      ? await loadNeighborhood(tx, input.villageId, input.draft.neighborhoodId)
+      : null;
+
+    const patch: Partial<t.NewCitizenReport> = {};
+    if (input.draft.category !== undefined) patch.category = input.draft.category;
+    if (input.draft.subject !== undefined) patch.subject = input.draft.subject;
+    if (input.draft.body !== undefined) patch.body = input.draft.body;
+    if (neighborhood) patch.neighborhoodId = neighborhood.id;
+    if (input.draft.priority !== undefined) patch.priority = input.draft.priority;
+    if (!Object.keys(patch).length) {
+      throw new DomainError("Tidak ada data yang diubah", "VALIDATION_ERROR", 422);
+    }
+
+    const [updated] = await tx
+      .update(t.citizenReports)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(t.citizenReports.id, report.id))
+      .returning();
+    if (!updated) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_DATA",
+      summary: `Laporan ${updated.ticket} — "${updated.subject}" diperbarui oleh pelapor ${resident.fullName}.`,
+      subjectType: "citizen_report",
+      subjectId: updated.id,
+      subjectRef: updated.ticket,
+      actor: {
+        id: null,
+        name: resident.fullName,
+        initials: initialsOf(resident.fullName) || "W",
+        role: "Warga (Portal)",
+      },
+      meta: {
+        changedFields: Object.keys(patch),
+        category: updated.category,
+        priority: updated.priority,
+      },
+    });
+
+    await notifyOfficers(tx, input.villageId, {
+      title: `Laporan ${updated.ticket} diperbarui pelapor`,
+      body: `${resident.fullName} mengubah laporan "${updated.subject}" sebelum ditindaklanjuti.`,
+      severity: notificationSeverity(updated.priority),
+      href: `/laporan?report=${updated.id}`,
+      subjectType: "citizen_report",
+      subjectId: updated.id,
+      subjectRef: updated.ticket,
+      meta: { changedFields: Object.keys(patch) },
+    });
+
+    return updated;
+  });
+}
+
+/**
+ * Reporter withdraws their own untouched report. The stored photos are
+ * returned as keys so the route deletes the bytes after the commit succeeds.
+ */
+export async function deleteCitizenReport(input: {
+  villageId: string;
+  residentId: string;
+  reportId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+    const report = await loadEditableOwnReport(tx, input.villageId, resident.id, input.reportId);
+
+    const attachments = await tx
+      .select({ storageKey: t.reportAttachments.storageKey })
+      .from(t.reportAttachments)
+      .where(eq(t.reportAttachments.reportId, report.id));
+
+    await tx.delete(t.citizenReports).where(eq(t.citizenReports.id, report.id));
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGHAPUSAN_DATA",
+      summary: `Laporan ${report.ticket} ditarik kembali oleh pelapor ${resident.fullName}.`,
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: report.ticket,
+      actor: {
+        id: null,
+        name: resident.fullName,
+        initials: initialsOf(resident.fullName) || "W",
+        role: "Warga (Portal)",
+      },
+      // The village book keeps the full withdrawn content.
+      meta: {
+        ticket: report.ticket,
+        category: report.category,
+        subject: report.subject,
+        body: report.body,
+        reporterNik: report.reporterNik,
+        attachments: attachments.length,
+      },
+    });
+
+    await notifyOfficers(tx, input.villageId, {
+      title: `Laporan ${report.ticket} ditarik pelapor`,
+      body: `"${report.subject}" ditarik kembali oleh ${resident.fullName} sebelum ditindaklanjuti.`,
+      severity: "INFO",
+      href: "/laporan",
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: report.ticket,
+    });
+
+    return {
+      id: report.id,
+      ticket: report.ticket,
+      subject: report.subject,
+      storageKeys: attachments.map((row) => row.storageKey),
+    };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Citizen reports — photo attachments                                         */
+/* -------------------------------------------------------------------------- */
+
+export type ReportAttachmentActor =
+  | { type: "STAFF"; staffId: string }
+  | { type: "RESIDENT"; residentId: string };
+
+/** Authorisation for attachment writes: staff always, reporter while untouched. */
+async function assertReportAttachmentAccess(
+  tx: DbOrTx,
+  villageId: string,
+  reportId: string,
+  actor: ReportAttachmentActor,
+) {
+  const [report] = await tx
+    .select()
+    .from(t.citizenReports)
+    .where(
+      and(
+        eq(t.citizenReports.id, reportId),
+        eq(t.citizenReports.villageId, villageId),
+      ),
+    )
+    .limit(1);
+  if (!report) throw new DomainError("Laporan tidak ditemukan", "REPORT_NOT_FOUND", 404);
+
+  if (actor.type === "STAFF") {
+    await loadStaff(tx, actor.staffId);
+    return report;
+  }
+
+  if (report.reporterResidentId !== actor.residentId) {
+    throw new DomainError(
+      "Laporan ini bukan milik Anda. Hanya pelapor yang dapat mengubah lampirannya.",
+      "REPORT_NOT_OWNED",
+      403,
+    );
+  }
+  if (!isReportEditable(report)) {
+    throw new DomainError(
+      `Laporan ${report.ticket} sudah ditindaklanjuti petugas dan tidak dapat diubah. Sampaikan informasi tambahan melalui kantor desa.`,
+      "REPORT_ALREADY_HANDLED",
+      409,
+    );
+  }
+  return report;
+}
+
+/** Adds already-persisted photos to a report and keeps `attachment_count` true. */
+export async function addReportAttachments(input: {
+  villageId: string;
+  reportId: string;
+  actor: ReportAttachmentActor;
+  attachments: StoredReportAttachment[];
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const report = await assertReportAttachmentAccess(tx, input.villageId, input.reportId, input.actor);
+    if (!input.attachments.length) {
+      throw new DomainError("Tidak ada foto yang ditambahkan.", "VALIDATION_ERROR", 422);
+    }
+    if (report.attachmentCount + input.attachments.length > MAX_REPORT_IMAGES) {
+      throw new DomainError(
+        `Maksimal ${MAX_REPORT_IMAGES} foto per laporan. Hapus salah satu foto sebelum menambahkan yang baru.`,
+        "TOO_MANY_ATTACHMENTS",
+        422,
+      );
+    }
+
+    const actorLabel =
+      input.actor.type === "STAFF"
+        ? await loadStaff(tx, input.actor.staffId).then(
+            (staff) => ({
+              id: staff.id as string | null,
+              name: staff.fullName,
+              initials: staff.initials,
+              role: staff.jobTitle,
+            }),
+          )
+        : await loadResident(tx, input.villageId, input.actor.residentId).then((resident) => ({
+            id: null as string | null,
+            name: resident.fullName,
+            initials: initialsOf(resident.fullName) || "W",
+            role: "Warga (Portal)",
+          }));
+
+    const now = new Date();
+    const rows: t.ReportAttachment[] = [];
+    for (const file of input.attachments) {
+      const [row] = await tx
+        .insert(t.reportAttachments)
+        .values({
+          reportId: report.id,
+          fileName: file.fileName,
+          storageKey: file.storageKey,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          width: file.width ?? null,
+          height: file.height ?? null,
+          caption: file.caption ?? null,
+          uploadedByResidentId:
+            input.actor.type === "RESIDENT" ? input.actor.residentId : null,
+          uploadedAt: now,
+        })
+        .returning();
+      rows.push(row);
+    }
+
+    const [updated] = await tx
+      .update(t.citizenReports)
+      .set({
+        attachmentCount: report.attachmentCount + rows.length,
+        updatedAt: now,
+      })
+      .where(eq(t.citizenReports.id, report.id))
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_DATA",
+      summary: `${rows.length} foto ditambahkan ke laporan ${report.ticket} oleh ${actorLabel.name}.`,
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: report.ticket,
+      actor: actorLabel,
+      meta: { attachments: updated.attachmentCount, added: rows.length },
+    });
+
+    return {
+      reportId: report.id,
+      ticket: report.ticket,
+      attachmentCount: updated.attachmentCount,
+      attachments: rows,
+    };
+  });
+}
+
+/** Removes one photo; the route deletes the bytes after the commit. */
+export async function removeReportAttachment(input: {
+  villageId: string;
+  reportId: string;
+  attachmentId: string;
+  actor: ReportAttachmentActor;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const report = await assertReportAttachmentAccess(tx, input.villageId, input.reportId, input.actor);
+
+    const [attachment] = await tx
+      .select()
+      .from(t.reportAttachments)
+      .where(
+        and(
+          eq(t.reportAttachments.id, input.attachmentId),
+          eq(t.reportAttachments.reportId, report.id),
+        ),
+      )
+      .limit(1);
+    if (!attachment) {
+      throw new DomainError("Foto tidak ditemukan pada laporan ini.", "ATTACHMENT_NOT_FOUND", 404);
+    }
+
+    const actorLabel =
+      input.actor.type === "STAFF"
+        ? await loadStaff(tx, input.actor.staffId).then(
+            (staff) => ({
+              id: staff.id as string | null,
+              name: staff.fullName,
+              initials: staff.initials,
+              role: staff.jobTitle,
+            }),
+          )
+        : await loadResident(tx, input.villageId, input.actor.residentId).then((resident) => ({
+            id: null as string | null,
+            name: resident.fullName,
+            initials: initialsOf(resident.fullName) || "W",
+            role: "Warga (Portal)",
+          }));
+
+    await tx.delete(t.reportAttachments).where(eq(t.reportAttachments.id, attachment.id));
+
+    const [updated] = await tx
+      .update(t.citizenReports)
+      .set({
+        attachmentCount: sql`greatest(${t.citizenReports.attachmentCount} - 1, 0)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(t.citizenReports.id, report.id))
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_DATA",
+      summary: `Foto "${attachment.fileName}" dihapus dari laporan ${report.ticket} oleh ${actorLabel.name}.`,
+      subjectType: "citizen_report",
+      subjectId: report.id,
+      subjectRef: report.ticket,
+      actor: actorLabel,
+      meta: { attachments: updated.attachmentCount, removed: attachment.id },
+    });
+
+    return {
+      id: attachment.id,
+      reportId: report.id,
+      storageKey: attachment.storageKey,
+      attachmentCount: updated.attachmentCount,
+    };
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Population registry (capability: manageRegistry)                             */
 /* -------------------------------------------------------------------------- */
@@ -1489,6 +2195,76 @@ export async function updateResident(input: {
   });
 }
 
+/**
+ * Deletes a resident from the registry. Refuses while letters or reports still
+ * reference the person; history-bearing residents are moved to Pindah Keluar /
+ * Meninggal instead. The audit trail keeps the full identity after deletion.
+ */
+export async function deleteResident(input: {
+  villageId: string;
+  staffId: string;
+  residentId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    const [letters] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(t.letterRequests)
+      .where(eq(t.letterRequests.applicantResidentId, resident.id));
+    const [reports] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(t.citizenReports)
+      .where(eq(t.citizenReports.reporterResidentId, resident.id));
+    const [mutations] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(t.residentMutations)
+      .where(eq(t.residentMutations.residentId, resident.id));
+
+    const letterCount = letters?.count ?? 0;
+    const reportCount = reports?.count ?? 0;
+    if (letterCount + reportCount > 0) {
+      throw new DomainError(
+        `Data ${resident.fullName} tidak dapat dihapus karena masih terhubung dengan ${letterCount + reportCount} pengajuan surat/laporan warga. Ubah statusnya menjadi Pindah Keluar atau Meninggal.`,
+        "RESIDENT_HAS_RECORDS",
+        409,
+      );
+    }
+
+    const family = resident.familyId
+      ? await tx
+          .select({ kkNumber: t.families.kkNumber })
+          .from(t.families)
+          .where(eq(t.families.id, resident.familyId))
+          .limit(1)
+      : [];
+
+    await tx.delete(t.residents).where(eq(t.residents.id, resident.id));
+    if (resident.familyId) await syncFamilyMemberCount(tx, resident.familyId);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGHAPUSAN_DATA",
+      summary: `Data penduduk ${resident.fullName} (NIK ${resident.nik}) dihapus dari register desa oleh ${staff.jobTitle}.`,
+      subjectType: "resident",
+      subjectId: resident.id,
+      subjectRef: resident.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        nik: resident.nik,
+        fullName: resident.fullName,
+        kkNumber: family[0]?.kkNumber ?? null,
+        mutations: mutations?.count ?? 0,
+        deletedBy: staff.id,
+      },
+    });
+
+    return { id: resident.id, nik: resident.nik, fullName: resident.fullName };
+  });
+}
+
 /** Opens a Kartu Keluarga and moves the listed residents into it. */
 export async function createFamily(input: {
   villageId: string;
@@ -1572,6 +2348,178 @@ export async function createFamily(input: {
 }
 
 /**
+ * Edits a Kartu Keluarga. `memberIds` replaces the member set: residents added
+ * move in (their previous family is re-counted), residents removed are
+ * detached, and every touched family keeps a truthful `member_count`.
+ */
+export async function updateFamily(input: {
+  villageId: string;
+  staffId: string;
+  familyId: string;
+  draft: FamilyUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const family = await loadFamily(tx, input.villageId, input.familyId);
+
+    if (input.draft.kkNumber && input.draft.kkNumber !== family.kkNumber) {
+      const [existing] = await tx
+        .select({ id: t.families.id, headName: t.families.headName })
+        .from(t.families)
+        .where(eq(t.families.kkNumber, input.draft.kkNumber))
+        .limit(1);
+      if (existing) {
+        throw new DomainError(
+          `Nomor KK ${input.draft.kkNumber} sudah terdaftar atas nama ${existing.headName}.`,
+          "KK_DUPLICATE",
+          409,
+        );
+      }
+    }
+
+    const neighborhood = input.draft.neighborhoodId
+      ? await loadNeighborhood(tx, input.villageId, input.draft.neighborhoodId)
+      : null;
+
+    const patch: Partial<t.NewFamily> = {};
+    if (input.draft.kkNumber !== undefined) patch.kkNumber = input.draft.kkNumber;
+    if (input.draft.headName !== undefined) patch.headName = input.draft.headName;
+    if (neighborhood) patch.neighborhoodId = neighborhood.id;
+    if (input.draft.address !== undefined) patch.address = input.draft.address;
+    if (input.draft.welfareClass !== undefined) patch.welfareClass = input.draft.welfareClass;
+
+    const changedKeys = Object.keys(patch);
+    const membersChanged = input.draft.memberIds !== undefined;
+    if (!changedKeys.length && !membersChanged) {
+      throw new DomainError("Tidak ada data yang diubah", "VALIDATION_ERROR", 422);
+    }
+
+    const touchedFamilyIds = new Set<string>();
+
+    if (membersChanged) {
+      const wanted = new Set(input.draft.memberIds ?? []);
+      const current = await tx
+        .select({ id: t.residents.id, familyId: t.residents.familyId })
+        .from(t.residents)
+        .where(eq(t.residents.familyId, family.id));
+
+      // Members no longer listed are released from the card.
+      for (const member of current) {
+        if (!wanted.has(member.id)) {
+          await tx
+            .update(t.residents)
+            .set({ familyId: null, updatedAt: new Date() })
+            .where(eq(t.residents.id, member.id));
+        }
+      }
+
+      // Newly listed residents move in; their previous family is re-counted.
+      for (const memberId of wanted) {
+        const resident = await loadResident(tx, input.villageId, memberId);
+        if (resident.familyId === family.id) continue;
+        await tx
+          .update(t.residents)
+          .set({ familyId: family.id, updatedAt: new Date() })
+          .where(eq(t.residents.id, resident.id));
+        if (resident.familyId) touchedFamilyIds.add(resident.familyId);
+      }
+      touchedFamilyIds.add(family.id);
+    }
+
+    let updated = family;
+    if (changedKeys.length) {
+      const [row] = await tx
+        .update(t.families)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(eq(t.families.id, family.id))
+        .returning();
+      if (!row) throw new DomainError("Kartu keluarga tidak ditemukan", "FAMILY_NOT_FOUND", 404);
+      updated = row;
+    }
+
+    for (const touchedId of touchedFamilyIds) {
+      await syncFamilyMemberCount(tx, touchedId);
+    }
+
+    const [withCount] = await tx
+      .select()
+      .from(t.families)
+      .where(eq(t.families.id, family.id))
+      .limit(1);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_DATA",
+      summary: `Kartu Keluarga ${updated.kkNumber} atas nama ${updated.headName} diperbarui oleh ${staff.jobTitle}.`,
+      subjectType: "family",
+      subjectId: updated.id,
+      subjectRef: updated.kkNumber,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        changedFields: membersChanged ? [...changedKeys, "memberIds"] : changedKeys,
+        memberCount: withCount?.memberCount ?? updated.memberCount,
+      },
+    });
+
+    return withCount ?? updated;
+  });
+}
+
+/**
+ * Deletes a Kartu Keluarga. Members are released — they stay in the registry,
+ * recorded without a KK number — and the audit row lists who was released.
+ */
+export async function deleteFamily(input: {
+  villageId: string;
+  staffId: string;
+  familyId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const family = await loadFamily(tx, input.villageId, input.familyId);
+
+    const members = await tx
+      .select({ id: t.residents.id, nik: t.residents.nik })
+      .from(t.residents)
+      .where(eq(t.residents.familyId, family.id));
+
+    if (members.length) {
+      await tx
+        .update(t.residents)
+        .set({ familyId: null, updatedAt: new Date() })
+        .where(eq(t.residents.familyId, family.id));
+    }
+
+    await tx.delete(t.families).where(eq(t.families.id, family.id));
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PENGHAPUSAN_DATA",
+      summary: `Kartu Keluarga ${family.kkNumber} atas nama ${family.headName} dihapus; ${members.length} anggota dilepas dari kartu keluarga.`,
+      subjectType: "family",
+      subjectId: family.id,
+      subjectRef: family.kkNumber,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        kkNumber: family.kkNumber,
+        headName: family.headName,
+        releasedMemberIds: members.map((member) => member.id),
+        releasedNiks: members.map((member) => member.nik),
+      },
+    });
+
+    return {
+      id: family.id,
+      kkNumber: family.kkNumber,
+      headName: family.headName,
+      releasedMemberIds: members.map((member) => member.id),
+    };
+  });
+}
+
+/**
  * Provisions the portal login for a resident. Audited as a security event:
  * only the fact of provisioning is recorded, never the password itself.
  */
@@ -1642,5 +2590,564 @@ export async function createResidentAccount(input: {
       active: account.active,
       createdAt: account.createdAt,
     };
+  });
+}
+/**
+ * Resets a resident's portal password. Audited as a security event: the fact
+ * of the reset is recorded, never the password itself. Live sessions are
+ * revoked so an old cookie cannot survive the reset.
+ */
+export async function resetResidentAccountPassword(input: {
+  villageId: string;
+  staffId: string;
+  residentId: string;
+  password: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    const [account] = await tx
+      .select()
+      .from(t.residentAccounts)
+      .where(eq(t.residentAccounts.residentId, resident.id))
+      .limit(1);
+    if (!account) {
+      throw new DomainError(
+        `Akun portal untuk ${resident.fullName} belum tersedia. Buat akun terlebih dahulu.`,
+        "ACCOUNT_NOT_FOUND",
+        404,
+      );
+    }
+
+    await tx
+      .update(t.residentAccounts)
+      .set({
+        passwordHash: hashPassword(input.password),
+        failedAttempts: 0,
+        lockedUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(t.residentAccounts.id, account.id));
+
+    const revoked = await revokeResidentSessions(tx, account.id);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "KEAMANAN_AKUN",
+      summary: `Kata sandi akun portal ${resident.fullName} (NIK ${resident.nik}) direset oleh ${staff.jobTitle}.`,
+      subjectType: "resident_account",
+      subjectId: account.id,
+      subjectRef: account.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      // Attempts and outcome only — never the password that was set.
+      meta: {
+        residentId: resident.id,
+        nik: resident.nik,
+        scope: "password_reset",
+        sessionsRevoked: revoked,
+      },
+    });
+
+    return {
+      id: account.id,
+      residentId: account.residentId,
+      nik: account.nik,
+      active: account.active,
+      sessionsRevoked: revoked,
+    };
+  });
+}
+
+/** Kills every live portal session belonging to one resident account. */
+async function revokeResidentSessions(tx: DbOrTx, accountId: string) {
+  const revoked = await tx
+    .update(t.sessions)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(t.sessions.actorType, "RESIDENT"),
+        eq(t.sessions.actorId, accountId),
+        isNull(t.sessions.revokedAt),
+      ),
+    )
+    .returning({ id: t.sessions.id });
+  return revoked.length;
+}
+
+/** Switches a resident's portal account between active and inactive. */
+export async function setResidentAccountActive(input: {
+  villageId: string;
+  staffId: string;
+  residentId: string;
+  active: boolean;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+
+    const [account] = await tx
+      .select()
+      .from(t.residentAccounts)
+      .where(eq(t.residentAccounts.residentId, resident.id))
+      .limit(1);
+    if (!account) {
+      throw new DomainError(
+        `Akun portal untuk ${resident.fullName} belum tersedia. Buat akun terlebih dahulu.`,
+        "ACCOUNT_NOT_FOUND",
+        404,
+      );
+    }
+
+    await tx
+      .update(t.residentAccounts)
+      .set({ active: input.active, updatedAt: new Date() })
+      .where(eq(t.residentAccounts.id, account.id));
+
+    // A deactivated account must lose its live sessions immediately.
+    const sessionsRevoked = input.active ? 0 : await revokeResidentSessions(tx, account.id);
+
+    await writeAudit(tx, input.villageId, {
+      kind: "KEAMANAN_AKUN",
+      summary: `Akun portal warga ${resident.fullName} (NIK ${resident.nik}) ${input.active ? "diaktifkan" : "dinonaktifkan"} oleh ${staff.jobTitle}.`,
+      subjectType: "resident_account",
+      subjectId: account.id,
+      subjectRef: account.nik,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        residentId: resident.id,
+        nik: resident.nik,
+        active: input.active,
+        sessionsRevoked,
+      },
+    });
+
+    return {
+      id: account.id,
+      residentId: account.residentId,
+      nik: account.nik,
+      active: input.active,
+      sessionsRevoked,
+    };
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Wilayah administratif (capability: manageArea)                              */
+/* -------------------------------------------------------------------------- */
+
+async function loadHamlet(tx: DbOrTx, villageId: string, hamletId: string) {
+  const [row] = await tx
+    .select()
+    .from(t.hamlets)
+    .where(and(eq(t.hamlets.id, hamletId), eq(t.hamlets.villageId, villageId)))
+    .limit(1);
+  if (!row) throw new DomainError("Dusun tidak ditemukan", "HAMLET_NOT_FOUND", 404);
+  return row;
+}
+
+async function loadNeighborhoodRow(tx: DbOrTx, villageId: string, neighborhoodId: string) {
+  const [row] = await tx
+    .select()
+    .from(t.neighborhoods)
+    .innerJoin(t.hamlets, eq(t.hamlets.id, t.neighborhoods.hamletId))
+    .where(and(eq(t.neighborhoods.id, neighborhoodId), eq(t.hamlets.villageId, villageId)))
+    .limit(1);
+  if (!row) throw new DomainError("Wilayah RT/RW tidak ditemukan", "NEIGHBORHOOD_NOT_FOUND", 404);
+  return row;
+}
+
+/** The short label read models print: `"Dusun 01 - Cikembang"` → `"Dusun 01"`. */
+function shortHamletLabel(name: string) {
+  return name.split(" - ")[0];
+}
+
+function rtRwLabel(rt: number, rw: number) {
+  return `RT ${String(rt).padStart(2, "0")}/RW ${String(rw).padStart(2, "0")}`;
+}
+
+export async function createHamlet(input: {
+  villageId: string;
+  staffId: string;
+  draft: HamletDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+
+    const [existing] = await tx
+      .select({ id: t.hamlets.id, name: t.hamlets.name })
+      .from(t.hamlets)
+      .where(and(eq(t.hamlets.villageId, input.villageId), eq(t.hamlets.code, input.draft.code)))
+      .limit(1);
+    if (existing) {
+      throw new DomainError(
+        `Kode dusun ${input.draft.code} sudah dipakai oleh ${existing.name}.`,
+        "HAMLET_CODE_DUPLICATE",
+        409,
+      );
+    }
+
+    const [hamlet] = await tx
+      .insert(t.hamlets)
+      .values({
+        villageId: input.villageId,
+        name: input.draft.name,
+        code: input.draft.code,
+        headName: input.draft.headName ?? null,
+      })
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `Dusun ${hamlet.name} (${hamlet.code}) ditambahkan ke wilayah desa oleh ${staff.jobTitle}.`,
+      subjectType: "hamlet",
+      subjectId: hamlet.id,
+      subjectRef: hamlet.code,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: { code: hamlet.code, name: hamlet.name, headName: hamlet.headName },
+    });
+
+    return hamlet;
+  });
+}
+
+export async function updateHamlet(input: {
+  villageId: string;
+  staffId: string;
+  hamletId: string;
+  draft: HamletUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const hamlet = await loadHamlet(tx, input.villageId, input.hamletId);
+
+    if (input.draft.code && input.draft.code !== hamlet.code) {
+      const [existing] = await tx
+        .select({ id: t.hamlets.id, name: t.hamlets.name })
+        .from(t.hamlets)
+        .where(and(eq(t.hamlets.villageId, input.villageId), eq(t.hamlets.code, input.draft.code)))
+        .limit(1);
+      if (existing) {
+        throw new DomainError(
+          `Kode dusun ${input.draft.code} sudah dipakai oleh ${existing.name}.`,
+          "HAMLET_CODE_DUPLICATE",
+          409,
+        );
+      }
+    }
+
+    const patch: Partial<typeof t.hamlets.$inferInsert> = {};
+    if (input.draft.name !== undefined) patch.name = input.draft.name;
+    if (input.draft.code !== undefined) patch.code = input.draft.code;
+    if (input.draft.headName !== undefined) patch.headName = input.draft.headName;
+    if (!Object.keys(patch).length) {
+      throw new DomainError("Tidak ada data yang diubah", "VALIDATION_ERROR", 422);
+    }
+
+    const [updated] = await tx
+      .update(t.hamlets)
+      .set(patch)
+      .where(eq(t.hamlets.id, hamlet.id))
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `Dusun ${updated.name} (${updated.code}) diperbarui oleh ${staff.jobTitle}.`,
+      subjectType: "hamlet",
+      subjectId: updated.id,
+      subjectRef: updated.code,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        changedFields: Object.keys(patch),
+        from: { name: hamlet.name, code: hamlet.code },
+        to: { name: updated.name, code: updated.code },
+      },
+    });
+
+    return updated;
+  });
+}
+
+export async function deleteHamlet(input: {
+  villageId: string;
+  staffId: string;
+  hamletId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const hamlet = await loadHamlet(tx, input.villageId, input.hamletId);
+
+    const countsResult = await tx.execute<{
+      neighborhoods: number;
+      residents: number;
+      families: number;
+      requests: number;
+    }>(sql`
+      select (select count(*)::int from neighborhoods n where n.hamlet_id = ${hamlet.id}) as neighborhoods,
+             (select count(*)::int from residents r
+                join neighborhoods n on n.id = r.neighborhood_id
+               where n.hamlet_id = ${hamlet.id}) as residents,
+             (select count(*)::int from families f
+                join neighborhoods n on n.id = f.neighborhood_id
+               where n.hamlet_id = ${hamlet.id}) as families,
+             (select count(*)::int from letter_requests lr
+                join neighborhoods n on n.id = lr.neighborhood_id
+               where n.hamlet_id = ${hamlet.id}) as requests
+    `);
+    const c = countsResult.rows[0] ?? {
+      neighborhoods: 0,
+      residents: 0,
+      families: 0,
+      requests: 0,
+    };
+
+    if (c.neighborhoods + c.residents + c.families + c.requests > 0) {
+      throw new DomainError(
+        `Dusun ${shortHamletLabel(hamlet.name)} masih menaungi ${c.neighborhoods} RT/RW, ${c.residents} penduduk, dan ${c.families} kartu keluarga${c.requests ? ` serta ${c.requests} pengajuan surat` : ""}. Pindahkan mereka ke wilayah lain sebelum menghapus.`,
+        "AREA_IN_USE",
+        409,
+      );
+    }
+
+    await tx.delete(t.hamlets).where(eq(t.hamlets.id, hamlet.id));
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `Dusun ${hamlet.name} (${hamlet.code}) dihapus dari wilayah desa oleh ${staff.jobTitle}.`,
+      subjectType: "hamlet",
+      subjectId: hamlet.id,
+      subjectRef: hamlet.code,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: { code: hamlet.code, name: hamlet.name },
+    });
+
+    // Deleting an area invalidates printed addresses — tell the officers.
+    await notifyOfficers(tx, input.villageId, {
+      title: `Dusun ${shortHamletLabel(hamlet.name)} dihapus`,
+      body: `Wilayah ${hamlet.name} (${hamlet.code}) tidak lagi aktif. Periksa kembali alamat yang merujuk dusun ini.`,
+      severity: "WARNING",
+      href: "/wilayah",
+      subjectType: "hamlet",
+      subjectId: hamlet.id,
+      subjectRef: hamlet.code,
+    });
+
+    return { id: hamlet.id, code: hamlet.code, name: hamlet.name };
+  });
+}
+
+export async function createNeighborhood(input: {
+  villageId: string;
+  staffId: string;
+  draft: NeighborhoodDraft;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const hamlet = await loadHamlet(tx, input.villageId, input.draft.hamletId);
+
+    const [existing] = await tx
+      .select({ id: t.neighborhoods.id })
+      .from(t.neighborhoods)
+      .where(
+        and(
+          eq(t.neighborhoods.hamletId, hamlet.id),
+          eq(t.neighborhoods.rt, input.draft.rt),
+          eq(t.neighborhoods.rw, input.draft.rw),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      throw new DomainError(
+        `${rtRwLabel(input.draft.rt, input.draft.rw)} sudah terdaftar di Dusun ${shortHamletLabel(hamlet.name)}.`,
+        "NEIGHBORHOOD_DUPLICATE",
+        409,
+      );
+    }
+
+    const [neighborhood] = await tx
+      .insert(t.neighborhoods)
+      .values({
+        hamletId: hamlet.id,
+        rt: input.draft.rt,
+        rw: input.draft.rw,
+        headName: input.draft.headName ?? null,
+      })
+      .returning();
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `${rtRwLabel(neighborhood.rt, neighborhood.rw)} ditambahkan ke Dusun ${shortHamletLabel(hamlet.name)} oleh ${staff.jobTitle}.`,
+      subjectType: "neighborhood",
+      subjectId: neighborhood.id,
+      subjectRef: `${hamlet.code}·${neighborhood.rt}/${neighborhood.rw}`,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: { hamletId: hamlet.id, hamletCode: hamlet.code, rt: neighborhood.rt, rw: neighborhood.rw },
+    });
+
+    return neighborhood;
+  });
+}
+
+export async function updateNeighborhood(input: {
+  villageId: string;
+  staffId: string;
+  neighborhoodId: string;
+  draft: NeighborhoodUpdate;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const current = await loadNeighborhoodRow(tx, input.villageId, input.neighborhoodId);
+    const row = current.neighborhoods;
+    const oldHamlet = current.hamlets;
+
+    const nextHamletId = input.draft.hamletId ?? row.hamletId;
+    const nextRt = input.draft.rt ?? row.rt;
+    const nextRw = input.draft.rw ?? row.rw;
+
+    const nextHamlet =
+      nextHamletId !== row.hamletId
+        ? await loadHamlet(tx, input.villageId, nextHamletId)
+        : oldHamlet;
+
+    const moved = nextHamletId !== row.hamletId || nextRt !== row.rt || nextRw !== row.rw;
+    if (moved) {
+      const [existing] = await tx
+        .select({ id: t.neighborhoods.id })
+        .from(t.neighborhoods)
+        .where(
+          and(
+            eq(t.neighborhoods.hamletId, nextHamletId),
+            eq(t.neighborhoods.rt, nextRt),
+            eq(t.neighborhoods.rw, nextRw),
+            sql`${t.neighborhoods.id} <> ${row.id}`,
+          ),
+        )
+        .limit(1);
+      if (existing) {
+        throw new DomainError(
+          `${rtRwLabel(nextRt, nextRw)} sudah terdaftar di Dusun ${shortHamletLabel(nextHamlet.name)}.`,
+          "NEIGHBORHOOD_DUPLICATE",
+          409,
+        );
+      }
+    }
+
+    const patch: Partial<typeof t.neighborhoods.$inferInsert> = {};
+    if (nextHamletId !== row.hamletId) patch.hamletId = nextHamletId;
+    if (nextRt !== row.rt) patch.rt = nextRt;
+    if (nextRw !== row.rw) patch.rw = nextRw;
+    if (input.draft.headName !== undefined) patch.headName = input.draft.headName;
+    if (!Object.keys(patch).length) {
+      throw new DomainError("Tidak ada data yang diubah", "VALIDATION_ERROR", 422);
+    }
+
+    const [updated] = await tx
+      .update(t.neighborhoods)
+      .set(patch)
+      .where(eq(t.neighborhoods.id, row.id))
+      .returning();
+
+    const reparented = patch.hamletId !== undefined;
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `${rtRwLabel(updated.rt, updated.rw)} di Dusun ${shortHamletLabel(nextHamlet.name)} diperbarui oleh ${staff.jobTitle}.`,
+      subjectType: "neighborhood",
+      subjectId: updated.id,
+      subjectRef: `${nextHamlet.code}·${updated.rt}/${updated.rw}`,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: {
+        changedFields: Object.keys(patch),
+        from: { hamletCode: oldHamlet.code, rt: row.rt, rw: row.rw },
+        to: { hamletCode: nextHamlet.code, rt: updated.rt, rw: updated.rw },
+      },
+    });
+
+    // Re-parenting rewrites every address printed for this RT/RW.
+    if (reparented) {
+      await notifyOfficers(tx, input.villageId, {
+        title: `${rtRwLabel(updated.rt, updated.rw)} pindah dusun`,
+        body: `Wilayah ${rtRwLabel(updated.rt, updated.rw)} dipindahkan dari Dusun ${shortHamletLabel(oldHamlet.name)} ke Dusun ${shortHamletLabel(nextHamlet.name)}. Alamat warga ikut berubah.`,
+        severity: "WARNING",
+        href: "/wilayah",
+        subjectType: "neighborhood",
+        subjectId: updated.id,
+        subjectRef: `${nextHamlet.code}·${updated.rt}/${updated.rw}`,
+      });
+    }
+
+    return updated;
+  });
+}
+
+export async function deleteNeighborhood(input: {
+  villageId: string;
+  staffId: string;
+  neighborhoodId: string;
+}) {
+  const db = await getDb();
+
+  return db.transaction(async (tx) => {
+    const staff = await loadStaff(tx, input.staffId);
+    const current = await loadNeighborhoodRow(tx, input.villageId, input.neighborhoodId);
+    const row = current.neighborhoods;
+    const hamlet = current.hamlets;
+
+    const countsResult = await tx.execute<{
+      residents: number;
+      families: number;
+      requests: number;
+    }>(sql`
+      select (select count(*)::int from residents r where r.neighborhood_id = ${row.id}) as residents,
+             (select count(*)::int from families f where f.neighborhood_id = ${row.id}) as families,
+             (select count(*)::int from letter_requests lr where lr.neighborhood_id = ${row.id}) as requests
+    `);
+    const c = countsResult.rows[0] ?? { residents: 0, families: 0, requests: 0 };
+
+    if (c.residents + c.families + c.requests > 0) {
+      throw new DomainError(
+        `${rtRwLabel(row.rt, row.rw)} ini masih menaungi ${c.residents} penduduk dan ${c.families} kartu keluarga${c.requests ? ` serta ${c.requests} pengajuan surat` : ""}. Pindahkan mereka ke wilayah lain sebelum menghapus.`,
+        "AREA_IN_USE",
+        409,
+      );
+    }
+
+    await tx.delete(t.neighborhoods).where(eq(t.neighborhoods.id, row.id));
+
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_WILAYAH",
+      summary: `${rtRwLabel(row.rt, row.rw)} di Dusun ${shortHamletLabel(hamlet.name)} dihapus oleh ${staff.jobTitle}.`,
+      subjectType: "neighborhood",
+      subjectId: row.id,
+      subjectRef: `${hamlet.code}·${row.rt}/${row.rw}`,
+      actor: { id: staff.id, name: staff.fullName, initials: staff.initials, role: staff.jobTitle },
+      meta: { hamletId: hamlet.id, hamletCode: hamlet.code, rt: row.rt, rw: row.rw },
+    });
+
+    // Deleting an area invalidates printed addresses — tell the officers.
+    await notifyOfficers(tx, input.villageId, {
+      title: `${rtRwLabel(row.rt, row.rw)} dihapus`,
+      body: `Wilayah ${rtRwLabel(row.rt, row.rw)} Dusun ${shortHamletLabel(hamlet.name)} tidak lagi aktif.`,
+      severity: "WARNING",
+      href: "/wilayah",
+      subjectType: "neighborhood",
+      subjectId: row.id,
+      subjectRef: `${hamlet.code}·${row.rt}/${row.rw}`,
+    });
+
+    return { id: row.id, rt: row.rt, rw: row.rw, hamletId: hamlet.id };
   });
 }

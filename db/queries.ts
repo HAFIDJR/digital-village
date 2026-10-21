@@ -222,6 +222,10 @@ export type NotificationEntry = {
   body: string | null;
   severity: string;
   href: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  subjectRef: string | null;
+  meta: Record<string, unknown>;
   readAt: string | null;
   createdAt: string;
 };
@@ -240,6 +244,8 @@ export type ReportEntry = {
   rw: number | null;
   handledByName: string | null;
   responseCount: number;
+  /** Number of stored photos — the table prints a paperclip badge for it. */
+  attachmentCount: number;
   submittedAt: string;
   resolvedAt: string | null;
 };
@@ -298,7 +304,6 @@ export type WorkspaceOverview = {
   queue: QueuePage;
   activity: ActivityEntry[];
   notifications: NotificationEntry[];
-  reports: ReportEntry[];
   announcements: AnnouncementEntry[];
   trend: ServiceTrendPoint[];
   letterTypes: { code: string; name: string; count: number }[];
@@ -510,9 +515,12 @@ function buildQueueFilter(villageId: string, query: QueueQuery): SQL {
   if (query.q) {
     const pattern = `%${query.q}%`;
     const digits = query.q.replace(/\D/g, "");
+    // id matching lets notification deep links (`/antrean?request=<id>`) land
+    // on the exact request even when it sits far from the first page.
     conditions.push(sql`(
       lr.applicant_name ilike ${pattern}
       or lr.ticket ilike ${pattern}
+      or lr.id::text ilike ${pattern}
       ${digits.length >= 4 ? sql`or lr.applicant_nik like ${`${digits}%`}` : sql``}
     )`);
   }
@@ -1048,46 +1056,209 @@ export async function getNotifications(
 ): Promise<NotificationEntry[]> {
   const db = await getDb();
   const result = await db.execute<NotificationEntry>(sql`
-    select id, title, body, severity, href, read_at as "readAt", created_at as "createdAt"
-    from notifications
-    where village_id = ${villageId}
-      and (recipient_staff_id is null or recipient_staff_id = ${staffId})
-    order by (read_at is null) desc, created_at desc
+    select n.id,
+           n.title,
+           n.body,
+           n.severity,
+           n.href,
+           n.subject_type as "subjectType",
+           n.subject_id   as "subjectId",
+           n.subject_ref  as "subjectRef",
+           n.meta,
+           coalesce(nr.read_at, n.read_at) as "readAt",
+           n.created_at   as "createdAt"
+    from notifications n
+    left join notification_reads nr
+      on nr.notification_id = n.id and nr.staff_id = ${staffId}
+    where n.village_id = ${villageId}
+      and (n.recipient_staff_id is null or n.recipient_staff_id = ${staffId})
+    order by (coalesce(nr.read_at, n.read_at) is null) desc, n.created_at desc
     limit ${limit}
   `);
   return result.rows;
 }
 
-export async function getReports(
+/* -------------------------------------------------------------------------- */
+/* Notification detail (W9)                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The record a notification points at, resolved into the facts the detail
+ * sheet prints. `generic` covers subjects that no longer exist (deleted rows
+ * keep their notification — the bell shows the archived title and body).
+ */
+export type NotificationSubject =
+  | {
+      kind: "citizen_report";
+      ticket: string;
+      subject: string;
+      status: string;
+      priority: string;
+      category: string;
+      reporterName: string;
+      neighborhoodLabel: string | null;
+      submittedAt: string;
+      rejectionReason: string | null;
+    }
+  | {
+      kind: "letter_request";
+      ticket: string;
+      letterTypeName: string;
+      applicantName: string;
+      status: string;
+      submittedAt: string;
+    }
+  | {
+      kind: "announcement";
+      title: string;
+      status: string;
+      channel: string;
+      publishedAt: string | null;
+    }
+  | {
+      kind: "resident";
+      nik: string;
+      fullName: string;
+      status: string;
+      hamletName: string | null;
+    }
+  | {
+      kind: "family";
+      kkNumber: string;
+      headName: string;
+      memberCount: number;
+      hamletName: string | null;
+    }
+  | { kind: "generic" };
+
+export type NotificationDetail = NotificationEntry & {
+  subject: NotificationSubject;
+};
+
+/**
+ * One notification plus its resolved subject, for the topbar detail sheet.
+ * Scoped to the village and to the officer's own recipient filter. Returns
+ * `null` for unknown ids.
+ */
+export async function getNotificationDetail(
   villageId: string,
-  limit = 20,
-): Promise<ReportEntry[]> {
+  staffId: string,
+  notificationId: string,
+): Promise<NotificationDetail | null> {
   const db = await getDb();
-  const result = await db.execute<ReportEntry>(sql`
-    select cr.id,
-           cr.ticket,
-           cr.reporter_name  as "reporterName",
-           cr.subject,
-           cr.category,
-           cr.body,
-           cr.status,
-           cr.priority::text as priority,
-           split_part(h.name, ' - ', 1) as dusun,
-           n.rt,
-           n.rw,
-           st.full_name      as "handledByName",
-           cr.response_count as "responseCount",
-           cr.submitted_at   as "submittedAt",
-           cr.resolved_at    as "resolvedAt"
-    from citizen_reports cr
-    left join neighborhoods n on n.id = cr.neighborhood_id
-    left join hamlets h on h.id = n.hamlet_id
-    left join staff st on st.id = cr.handled_by_staff_id
-    where cr.village_id = ${villageId}
-    order by array_position(array['NEW','IN_PROGRESS','RESOLVED','REJECTED'], cr.status), cr.submitted_at desc
-    limit ${limit}
+
+  const base = await db.execute<NotificationEntry>(sql`
+    select n.id,
+           n.title,
+           n.body,
+           n.severity::text as severity,
+           n.href,
+           n.subject_type   as "subjectType",
+           n.subject_id     as "subjectId",
+           n.subject_ref    as "subjectRef",
+           n.meta,
+           coalesce(nr.read_at, n.read_at) as "readAt",
+           n.created_at     as "createdAt"
+    from notifications n
+    left join notification_reads nr
+      on nr.notification_id = n.id and nr.staff_id = ${staffId}
+    where n.id = ${notificationId}
+      and n.village_id = ${villageId}
+      and (n.recipient_staff_id is null or n.recipient_staff_id = ${staffId})
+    limit 1
   `);
-  return result.rows;
+  const notification = base.rows[0];
+  if (!notification) return null;
+
+  const subjectId = notification.subjectId;
+  if (!subjectId) return { ...notification, subject: { kind: "generic" } };
+
+  switch (notification.subjectType) {
+    case "citizen_report": {
+      const rows = await db.execute<Omit<Extract<NotificationSubject, { kind: "citizen_report" }>, "kind">>(sql`
+        select cr.ticket,
+               cr.subject,
+               cr.status,
+               cr.priority::text as priority,
+               cr.category,
+               cr.reporter_name  as "reporterName",
+               case when n.id is null then null
+                    else concat('RT ', lpad(n.rt::text, 2, '0'), '/RW ', lpad(n.rw::text, 2, '0'),
+                                ' · ', split_part(h.name, ' - ', 1))
+               end as "neighborhoodLabel",
+               cr.submitted_at   as "submittedAt",
+               cr.rejection_reason as "rejectionReason"
+        from citizen_reports cr
+        left join neighborhoods n on n.id = cr.neighborhood_id
+        left join hamlets h on h.id = n.hamlet_id
+        where cr.id = ${subjectId} and cr.village_id = ${villageId}
+        limit 1
+      `);
+      const row = rows.rows[0];
+      return { ...notification, subject: row ? { kind: "citizen_report", ...row } : { kind: "generic" } };
+    }
+    case "letter_request": {
+      const rows = await db.execute<Omit<Extract<NotificationSubject, { kind: "letter_request" }>, "kind">>(sql`
+        select lr.ticket,
+               lt.name          as "letterTypeName",
+               lr.applicant_name as "applicantName",
+               lr.status::text  as status,
+               lr.submitted_at  as "submittedAt"
+        from letter_requests lr
+        join letter_types lt on lt.id = lr.letter_type_id
+        where lr.id = ${subjectId} and lr.village_id = ${villageId}
+        limit 1
+      `);
+      const row = rows.rows[0];
+      return { ...notification, subject: row ? { kind: "letter_request", ...row } : { kind: "generic" } };
+    }
+    case "announcement": {
+      const rows = await db.execute<Omit<Extract<NotificationSubject, { kind: "announcement" }>, "kind">>(sql`
+        select a.title,
+               a.status::text  as status,
+               a.channel::text as channel,
+               a.publish_at    as "publishedAt"
+        from announcements a
+        where a.id = ${subjectId} and a.village_id = ${villageId}
+        limit 1
+      `);
+      const row = rows.rows[0];
+      return { ...notification, subject: row ? { kind: "announcement", ...row } : { kind: "generic" } };
+    }
+    case "resident":
+    case "resident_account": {
+      const rows = await db.execute<Omit<Extract<NotificationSubject, { kind: "resident" }>, "kind">>(sql`
+        select r.nik,
+               r.full_name    as "fullName",
+               r.status::text as status,
+               split_part(h.name, ' - ', 1) as "hamletName"
+        from residents r
+        left join neighborhoods n on n.id = r.neighborhood_id
+        left join hamlets h on h.id = n.hamlet_id
+        where r.id = ${subjectId}
+        limit 1
+      `);
+      const row = rows.rows[0];
+      return { ...notification, subject: row ? { kind: "resident", ...row } : { kind: "generic" } };
+    }
+    case "family": {
+      const rows = await db.execute<Omit<Extract<NotificationSubject, { kind: "family" }>, "kind">>(sql`
+        select f.kk_number    as "kkNumber",
+               f.head_name    as "headName",
+               f.member_count as "memberCount",
+               split_part(h.name, ' - ', 1) as "hamletName"
+        from families f
+        left join neighborhoods n on n.id = f.neighborhood_id
+        left join hamlets h on h.id = n.hamlet_id
+        where f.id = ${subjectId}
+        limit 1
+      `);
+      const row = rows.rows[0];
+      return { ...notification, subject: row ? { kind: "family", ...row } : { kind: "generic" } };
+    }
+    default:
+      return { ...notification, subject: { kind: "generic" } };
+  }
 }
 
 export async function getAnnouncements(
@@ -1116,6 +1287,48 @@ export async function getAnnouncements(
     limit ${limit}
   `);
   return result.rows;
+}
+
+/** The full announcement row an edit dialog needs — body included. */
+export type AnnouncementDetail = AnnouncementEntry & {
+  body: string;
+  expiresAt: string | null;
+  updatedAt: string;
+};
+
+/**
+ * One announcement by id (scoped to the village) — the read model behind
+ * `GET /api/announcements/[id]`. Returns `null` for unknown ids.
+ */
+export async function getAnnouncement(
+  villageId: string,
+  announcementId: string,
+): Promise<AnnouncementDetail | null> {
+  const db = await getDb();
+  const result = await db.execute<AnnouncementDetail>(sql`
+    select a.id,
+           a.title,
+           a.slug,
+           a.excerpt,
+           a.body,
+           a.channel::text as channel,
+           a.status::text  as status,
+           a.priority::text as priority,
+           a.pinned,
+           a.audience,
+           st.full_name    as "authorName",
+           a.publish_at    as "publishAt",
+           a.expires_at    as "expiresAt",
+           a.view_count    as "viewCount",
+           a.created_at    as "createdAt",
+           a.updated_at    as "updatedAt"
+    from announcements a
+    left join staff st on st.id = a.author_staff_id
+    where a.id = ${announcementId}
+      and a.village_id = ${villageId}
+    limit 1
+  `);
+  return result.rows[0] ?? null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1251,13 +1464,12 @@ export async function getWorkspaceOverview(
 
   const officer = await getActiveOfficer(village.id);
 
-  const [kpi, queue, activity, notifications, reports, announcements, trend] =
+  const [kpi, queue, activity, notifications, announcements, trend] =
     await Promise.all([
       getKpiSummary(village.id),
       listLetterRequests(village.id, query),
       getActivityFeed(village.id, 10),
       getNotifications(village.id, officer?.id ?? null),
-      getReports(village.id, 12),
       getAnnouncements(village.id, 5),
       getServiceTrend(village.id, 14),
     ]);
@@ -1285,7 +1497,6 @@ export async function getWorkspaceOverview(
     queue,
     activity,
     notifications,
-    reports,
     announcements,
     trend,
     letterTypes: queue.letterTypeCounts.map((t) => ({
@@ -1321,7 +1532,10 @@ export type ReportRow = ReportEntry & {
   reporterNik: string;
   reporterPhone: string | null;
   hamletName: string | null;
+  handledByStaffId: string | null;
   handledByInitials: string | null;
+  /** Written reason an officer gave when closing the report as Ditolak. */
+  rejectionReason: string | null;
   /** Whole days the report has been sitting open (0 for today's filings). */
   openDays: number;
 };
@@ -1343,11 +1557,14 @@ function buildReportFilter(villageId: string, query: ReportQuery): SQL {
 
   if (query.q) {
     const pattern = `%${query.q}%`;
+    // id matching lets notification deep links (`/laporan?report=<id>`) land
+    // on the exact report even when it sits far from the first page.
     conditions.push(sql`(
       cr.subject ilike ${pattern}
       or cr.body ilike ${pattern}
       or cr.ticket ilike ${pattern}
       or cr.reporter_name ilike ${pattern}
+      or cr.id::text ilike ${pattern}
     )`);
   }
   if (query.status?.length) {
@@ -1422,7 +1639,10 @@ export async function listReports(
                n.rw,
                st.full_name      as "handledByName",
                st.initials       as "handledByInitials",
+               cr.handled_by_staff_id as "handledByStaffId",
                cr.response_count as "responseCount",
+               cr.attachment_count as "attachmentCount",
+               cr.rejection_reason as "rejectionReason",
                cr.submitted_at   as "submittedAt",
                cr.resolved_at    as "resolvedAt",
                floor(extract(epoch from (now() - cr.submitted_at)) / 86400)::int as "openDays"
@@ -1538,6 +1758,9 @@ export type ResidentRow = {
   occupation: string | null;
   familyRelation: string | null;
   kkNumber: string | null;
+  /** Needed by the edit dialog's RT/RW select. */
+  neighborhoodId: string;
+  nationality: string;
   dusun: string;
   dusunCode: string;
   rt: number;
@@ -1547,6 +1770,10 @@ export type ResidentRow = {
   status: string;
   documentsVerified: boolean;
   hasAccount: boolean;
+  /** Portal account id, or null when the resident has no account. */
+  accountId: string | null;
+  /** `null` means "no account"; false means the account is deactivated. */
+  accountActive: boolean | null;
 };
 
 export type FamilyRow = {
@@ -1656,6 +1883,8 @@ export async function listResidents(
              r.occupation,
              r.family_relation  as "familyRelation",
              f.kk_number        as "kkNumber",
+             r.neighborhood_id  as "neighborhoodId",
+             r.nationality,
              split_part(h.name, ' - ', 1) as dusun,
              h.code             as "dusunCode",
              n.rt,
@@ -1664,7 +1893,9 @@ export async function listResidents(
              r.phone,
              r.status,
              r.documents_verified as "documentsVerified",
-             (ra.id is not null) as "hasAccount"
+             (ra.id is not null) as "hasAccount",
+             ra.id             as "accountId",
+             ra.active         as "accountActive"
       from residents r
       join neighborhoods n on n.id = r.neighborhood_id
       join hamlets h on h.id = n.hamlet_id
@@ -1835,6 +2066,89 @@ export async function listFamilies(
   };
 }
 
+/** Everything the family detail sheet prints: header facts plus the members. */
+export type FamilyMemberRow = {
+  id: string;
+  nik: string;
+  fullName: string;
+  gender: string;
+  birthDate: string;
+  status: string;
+  relationLabel: string | null;
+};
+
+export type FamilyDetail = FamilyRow & {
+  neighborhoodId: string;
+  hamletId: string;
+  hamletName: string;
+  createdAt: string;
+  updatedAt: string;
+  members: FamilyMemberRow[];
+};
+
+/**
+ * One Kartu Keluarga with its member list — the read model behind the family
+ * detail sheet. Returns `null` when the family is unknown to this village.
+ */
+export async function getFamilyDetail(
+  villageId: string,
+  familyId: string,
+): Promise<FamilyDetail | null> {
+  const db = await getDb();
+
+  const [familyResult, memberResult] = await Promise.all([
+    db.execute<FamilyDetail>(sql`
+      select f.id,
+             f.kk_number     as "kkNumber",
+             f.head_name     as "headName",
+             head.nik        as "headNik",
+             f.member_count  as "memberCount",
+             f.welfare_class as "welfareClass",
+             split_part(h.name, ' - ', 1) as dusun,
+             h.code          as "dusunCode",
+             n.rt,
+             n.rw,
+             f.address,
+             f.neighborhood_id as "neighborhoodId",
+             h.id              as "hamletId",
+             h.name            as "hamletName",
+             f.created_at      as "createdAt",
+             f.updated_at      as "updatedAt"
+      from families f
+      join neighborhoods n on n.id = f.neighborhood_id
+      join hamlets h on h.id = n.hamlet_id
+      left join lateral (
+        select r.nik
+        from residents r
+        where r.family_id = f.id
+          and upper(coalesce(r.family_relation, '')) = 'KEPALA KELUARGA'
+        limit 1
+      ) head on true
+      where f.id = ${familyId}
+        and h.village_id = ${villageId}
+      limit 1
+    `),
+
+    db.execute<FamilyMemberRow>(sql`
+      select r.id,
+             r.nik,
+             r.full_name       as "fullName",
+             r.gender::text    as gender,
+             to_char(r.birth_date, 'YYYY-MM-DD') as "birthDate",
+             r.status::text    as status,
+             r.family_relation as "relationLabel"
+      from residents r
+      where r.family_id = ${familyId}
+      order by (upper(coalesce(r.family_relation, '')) = 'KEPALA KELUARGA') desc,
+               r.birth_date asc
+    `),
+  ]);
+
+  const family = familyResult.rows[0];
+  if (!family) return null;
+  return { ...family, members: memberResult.rows };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Area & staffing (routes: /wilayah, /pengaturan)                              */
 /* -------------------------------------------------------------------------- */
@@ -1853,6 +2167,8 @@ export type HamletArea = {
 
 export type NeighborhoodArea = {
   id: string;
+  /** Parent dusun — the edit dialog seeds its select from this. */
+  hamletId: string;
   hamlet: string;
   hamletCode: string;
   rt: number;
@@ -1897,6 +2213,7 @@ export async function listAreas(villageId: string): Promise<AreaOverview> {
 
     db.execute<NeighborhoodArea>(sql`
       select n.id,
+             n.hamlet_id as "hamletId",
              h.name as hamlet,
              h.code as "hamletCode",
              n.rt,
@@ -2378,6 +2695,12 @@ export type ResidentReportEntry = {
   rw: number | null;
   handledByName: string | null;
   responseCount: number;
+  attachmentCount: number;
+  rejectionReason: string | null;
+  /** Drives `isReportEditable` on the client: edit/delete only while untouched. */
+  handledByStaffId: string | null;
+  neighborhoodId: string | null;
+  updatedAt: string;
   submittedAt: string;
   resolvedAt: string | null;
 };
@@ -2435,6 +2758,11 @@ export async function listResidentReports(
            n.rw,
            st.full_name      as "handledByName",
            cr.response_count as "responseCount",
+           cr.attachment_count as "attachmentCount",
+           cr.rejection_reason as "rejectionReason",
+           cr.handled_by_staff_id as "handledByStaffId",
+           cr.neighborhood_id as "neighborhoodId",
+           cr.updated_at as "updatedAt",
            cr.submitted_at   as "submittedAt",
            cr.resolved_at    as "resolvedAt"
     from citizen_reports cr
@@ -2447,6 +2775,104 @@ export async function listResidentReports(
     limit ${limit}
   `);
   return result.rows;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Citizen report photo attachments (W5)                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Attachment metadata safe to show in a drawer or picker — never the bytes. */
+export type ReportAttachmentView = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  width: number | null;
+  height: number | null;
+  caption: string | null;
+  uploadedAt: string;
+};
+
+/**
+ * The photos attached to one report, oldest first. Used by the staff drawer
+ * and the resident edit dialog; bytes are streamed through a separate route.
+ */
+export async function listReportAttachments(
+  villageId: string,
+  reportId: string,
+): Promise<ReportAttachmentView[]> {
+  const db = await getDb();
+  const result = await db.execute<ReportAttachmentView>(sql`
+    select ra.id,
+           ra.file_name    as "fileName",
+           ra.mime_type    as "mimeType",
+           ra.size_bytes   as "sizeBytes",
+           ra.width,
+           ra.height,
+           ra.caption,
+           ra.uploaded_at  as "uploadedAt"
+    from report_attachments ra
+    join citizen_reports cr on cr.id = ra.report_id
+    where ra.report_id = ${reportId}
+      and cr.village_id = ${villageId}
+    order by ra.uploaded_at asc, ra.id asc
+  `);
+  return result.rows;
+}
+
+/** Streaming rows additionally carry the storage key and the reporter id. */
+export type ReportAttachmentFile = ReportAttachmentView & {
+  storageKey: string;
+  reporterResidentId: string | null;
+};
+
+/**
+ * One attachment's storage key for the byte-streaming route. `reporterResidentId`
+ * lets the route authorise the reporter without a second query; staff pass the
+ * capability guard instead. Returns `null` for unknown ids.
+ */
+export async function getReportAttachmentFile(
+  villageId: string,
+  reportId: string,
+  attachmentId: string,
+): Promise<ReportAttachmentFile | null> {
+  const db = await getDb();
+  const result = await db.execute<ReportAttachmentFile>(sql`
+    select ra.id,
+           ra.file_name    as "fileName",
+           ra.mime_type    as "mimeType",
+           ra.size_bytes   as "sizeBytes",
+           ra.width,
+           ra.height,
+           ra.caption,
+           ra.uploaded_at  as "uploadedAt",
+           ra.storage_key  as "storageKey",
+           cr.reporter_resident_id as "reporterResidentId"
+    from report_attachments ra
+    join citizen_reports cr on cr.id = ra.report_id
+    where ra.id = ${attachmentId}
+      and ra.report_id = ${reportId}
+      and cr.village_id = ${villageId}
+    limit 1
+  `);
+  return result.rows[0] ?? null;
+}
+
+/**
+ * One of the resident's own reports with its photos — the read model behind
+ * `GET /api/warga/reports/[id]`. Returns `null` when the id is unknown or
+ * belongs to somebody else, so the route can answer 404 either way.
+ */
+export async function getResidentReport(
+  villageId: string,
+  residentId: string,
+  reportId: string,
+): Promise<{ report: ResidentReportEntry; attachments: ReportAttachmentView[] } | null> {
+  const reports = await listResidentReports(villageId, residentId, 100);
+  const report = reports.find((row) => row.id === reportId);
+  if (!report) return null;
+  const attachments = await listReportAttachments(villageId, reportId);
+  return { report, attachments };
 }
 
 export type ResidentAnnouncementEntry = {
