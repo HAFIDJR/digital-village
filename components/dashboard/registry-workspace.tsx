@@ -1,6 +1,18 @@
 "use client";
 
-import { IdCard, KeyRound, MapPin, PieChart, RefreshCw, Users, UserPlus, Venus } from "lucide-react";
+import {
+  IdCard,
+  KeyRound,
+  MapPin,
+  PencilLine,
+  PieChart,
+  RefreshCw,
+  Trash2,
+  UserCog,
+  Users,
+  UserPlus,
+  Venus,
+} from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +24,7 @@ import {
   REGISTRY_SORT_LABEL,
   RELIGION_LABEL,
   RESIDENT_STATUS,
+  RESIDENT_STATUS_ORDER,
   ROLE_CAPABILITIES,
   TONE_CLASSES,
   welfareTone,
@@ -20,22 +33,28 @@ import { formatDate, formatKk, formatNik, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   errorMessage,
+  useDeleteFamilyMutation,
+  useDeleteResidentMutation,
   useGetShellQuery,
   useListRegistryQuery,
+  useUpdateResidentMutation,
 } from "@/store/api";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { activeRegistryFilterCount, registryActions } from "@/store/registry-slice";
-import type { FamilyRow, ResidentRow } from "@/db/queries";
+import type { FamilyDetail, FamilyRow, ResidentRow } from "@/db/queries";
 import type { StaffRole } from "@/db/schema";
 import type { RegistryQuery } from "@/lib/validators";
 
+import { FamilyDetailDrawer } from "./registry/family-detail-drawer";
 import { FamilyFormDialog } from "./registry/family-form-dialog";
 import { FamilyReport } from "./registry/family-report";
 import { ResidentAccountDialog } from "./registry/resident-account-dialog";
 import type { ResidentAccountTarget } from "./registry/resident-account-dialog.tsx";
 import { ResidentFormDialog } from "./registry/resident-form-dialog";
 
-import { QueryErrorState } from "./feedback";
+import { QueryErrorState, toastFromMutation } from "./feedback";
+import { ConfirmDialog } from "./confirm-dialog";
+import { RowActions } from "./row-actions";
 import {
   ClearFiltersButton,
   FacetMenu,
@@ -85,12 +104,69 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
   const [residentFormOpen, setResidentFormOpen] = React.useState(false);
   const [familyFormOpen, setFamilyFormOpen] = React.useState(false);
   const [accountTarget, setAccountTarget] = React.useState<ResidentAccountTarget | null>(null);
+  const [residentEditTarget, setResidentEditTarget] = React.useState<ResidentRow | null>(null);
+  const [residentDeleteTarget, setResidentDeleteTarget] = React.useState<ResidentRow | null>(null);
+  const [familyEditTarget, setFamilyEditTarget] = React.useState<FamilyDetail | null>(null);
+  const [familyDeleteTarget, setFamilyDeleteTarget] = React.useState<FamilyRow | null>(null);
   const [reportOpen, setReportOpen] = React.useState(false);
   const [formNonce, setFormNonce] = React.useState(0);
+  const selectedFamilyId = useAppSelector((state) => state.registry.selectedFamilyId);
+
+  const [deleteResident, deleteResidentState] = useDeleteResidentMutation();
+  const [deleteFamily, deleteFamilyState] = useDeleteFamilyMutation();
+  const [updateResident, updateResidentState] = useUpdateResidentMutation();
 
   const canManageRegistry = shell.data?.officer
     ? (ROLE_CAPABILITIES[shell.data.officer.role as StaffRole]?.manageRegistry ?? false)
     : false;
+
+  const confirmResidentDelete = async () => {
+    if (!residentDeleteTarget) return;
+    try {
+      const result = await deleteResident(residentDeleteTarget.id).unwrap();
+      toastFromMutation(dispatch, {
+        tone: "success",
+        title: "Penduduk dihapus",
+        body: `${result.resident.fullName} (NIK ${formatNik(result.resident.nik)}) dihapus dari register penduduk.`,
+      });
+      setResidentDeleteTarget(null);
+    } catch {
+      // The dialog keeps the server message inline (e.g. RESIDENT_HAS_RECORDS).
+    }
+  };
+
+  const confirmFamilyDelete = async () => {
+    if (!familyDeleteTarget) return;
+    try {
+      const result = await deleteFamily(familyDeleteTarget.id).unwrap();
+      toastFromMutation(dispatch, {
+        tone: "success",
+        title: "Kartu keluarga dihapus",
+        body: `KK ${formatKk(result.family.kkNumber)} atas nama ${result.family.headName} dihapus; ${result.family.releasedMemberIds.length} anggota dilepas dari kartu keluarga.`,
+      });
+      setFamilyDeleteTarget(null);
+      dispatch(registryActions.familySelected(null));
+    } catch {
+      // The dialog keeps the server message inline.
+    }
+  };
+
+  const changeResidentStatus = async (row: ResidentRow, status: string) => {
+    try {
+      await updateResident({ id: row.id, body: { status: status as never } }).unwrap();
+      toastFromMutation(dispatch, {
+        tone: "success",
+        title: "Status penduduk diubah",
+        body: `${row.fullName} kini berstatus ${RESIDENT_STATUS[status]?.label ?? status}.`,
+      });
+    } catch (error) {
+      toastFromMutation(dispatch, {
+        tone: "danger",
+        title: "Status gagal diubah",
+        body: errorMessage(error),
+      });
+    }
+  };
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -296,11 +372,21 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
             loading={isLoading || (isFetching && !data?.rows.length)}
             canManageRegistry={canManageRegistry}
             onCreateAccount={setAccountTarget}
+            onEditResident={(row) => {
+              setFormNonce((nonce) => nonce + 1);
+              setResidentEditTarget(row);
+            }}
+            onDeleteResident={setResidentDeleteTarget}
+            onStatusChange={changeResidentStatus}
+            statusBusy={updateResidentState.isLoading}
           />
         ) : (
           <FamilyTable
             rows={(data?.rows as FamilyRow[] | undefined) ?? []}
             loading={isLoading || (isFetching && !data?.rows.length)}
+            canManageRegistry={canManageRegistry}
+            onOpenDetail={(id) => dispatch(registryActions.familySelected(id))}
+            onDeleteFamily={(row) => setFamilyDeleteTarget(row)}
           />
         )}
 
@@ -328,14 +414,26 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
       </Panel>
 
       <ResidentFormDialog
-        key={`resident-${formNonce}`}
-        open={residentFormOpen}
-        onOpenChange={setResidentFormOpen}
+        key={`resident-${formNonce}-${residentEditTarget?.id ?? "new"}`}
+        open={residentFormOpen || residentEditTarget !== null}
+        resident={residentEditTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setResidentFormOpen(false);
+            setResidentEditTarget(null);
+          }
+        }}
       />
       <FamilyFormDialog
-        key={`family-${formNonce}`}
-        open={familyFormOpen}
-        onOpenChange={setFamilyFormOpen}
+        key={`family-${formNonce}-${familyEditTarget?.id ?? "new"}`}
+        open={familyFormOpen || familyEditTarget !== null}
+        family={familyEditTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFamilyFormOpen(false);
+            setFamilyEditTarget(null);
+          }
+        }}
       />
       <ResidentAccountDialog
         key={`account-${accountTarget?.id ?? "none"}`}
@@ -344,6 +442,81 @@ export function RegistryWorkspace({ type }: { type: RegistryQuery["type"] }) {
         onOpenChange={(open) => {
           if (!open) setAccountTarget(null);
         }}
+      />
+
+      <FamilyDetailDrawer
+        familyId={selectedFamilyId}
+        onClose={() => dispatch(registryActions.familySelected(null))}
+        canManage={canManageRegistry}
+        onEdit={(family) => {
+          dispatch(registryActions.familySelected(null));
+          setFormNonce((nonce) => nonce + 1);
+          setFamilyEditTarget(family);
+        }}
+        onDelete={(family) => setFamilyDeleteTarget(family)}
+      />
+
+      <ConfirmDialog
+        open={residentDeleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setResidentDeleteTarget(null);
+        }}
+        tone="danger"
+        icon={Trash2}
+        title="Hapus data penduduk?"
+        description="Penghapusan bersifat permanen dan dicatat pada jejak audit desa. Penduduk yang masih memiliki pengajuan surat atau laporan tidak dapat dihapus — gunakan mutasi Pindah Keluar atau Meninggal."
+        details={
+          residentDeleteTarget ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              <dt className="text-fg-subtle">Nama</dt>
+              <dd className="font-medium text-fg">{residentDeleteTarget.fullName}</dd>
+              <dt className="text-fg-subtle">NIK</dt>
+              <dd className="tnum font-mono text-fg">{formatNik(residentDeleteTarget.nik)}</dd>
+              <dt className="text-fg-subtle">Kartu keluarga</dt>
+              <dd className="tnum font-mono text-fg">
+                {residentDeleteTarget.kkNumber
+                  ? formatKk(residentDeleteTarget.kkNumber)
+                  : "Tanpa KK"}
+              </dd>
+              <dt className="text-fg-subtle">Status</dt>
+              <dd className="text-fg">
+                {RESIDENT_STATUS[residentDeleteTarget.status]?.label ??
+                  residentDeleteTarget.status}
+              </dd>
+            </dl>
+          ) : null
+        }
+        confirmLabel="Hapus penduduk"
+        loading={deleteResidentState.isLoading}
+        error={deleteResidentState.isError ? errorMessage(deleteResidentState.error) : null}
+        onConfirm={confirmResidentDelete}
+      />
+
+      <ConfirmDialog
+        open={familyDeleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setFamilyDeleteTarget(null);
+        }}
+        tone="danger"
+        icon={Trash2}
+        title="Hapus kartu keluarga?"
+        description="Kartu keluarga dihapus dari register. Data penduduk anggota tidak ikut terhapus — mereka dilepas dan kembali tercatat tanpa nomor KK."
+        details={
+          familyDeleteTarget ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              <dt className="text-fg-subtle">Nomor KK</dt>
+              <dd className="tnum font-mono text-fg">{formatKk(familyDeleteTarget.kkNumber)}</dd>
+              <dt className="text-fg-subtle">Kepala keluarga</dt>
+              <dd className="font-medium text-fg">{familyDeleteTarget.headName}</dd>
+              <dt className="text-fg-subtle">Anggota</dt>
+              <dd className="tnum text-fg">{familyDeleteTarget.memberCount} orang</dd>
+            </dl>
+          ) : null
+        }
+        confirmLabel="Hapus kartu keluarga"
+        loading={deleteFamilyState.isLoading}
+        error={deleteFamilyState.isError ? errorMessage(deleteFamilyState.error) : null}
+        onConfirm={confirmFamilyDelete}
       />
     </>
   );
@@ -356,7 +529,7 @@ const RESIDENT_COLUMNS = [
   { key: "education", label: "Pendidikan & Pekerjaan", width: "w-[210px]" },
   { key: "area", label: "Alamat", width: "w-[210px]" },
   { key: "status", label: "Status", width: "w-[140px]" },
-  { key: "actions", label: "Akun Portal", width: "w-[150px]" },
+  { key: "actions", label: "Akun & Aksi", width: "w-[190px]" },
 ] as const;
 
 function ResidentTable({
@@ -364,11 +537,19 @@ function ResidentTable({
   loading,
   canManageRegistry,
   onCreateAccount,
+  onEditResident,
+  onDeleteResident,
+  onStatusChange,
+  statusBusy,
 }: {
   rows: ResidentRow[];
   loading: boolean;
   canManageRegistry: boolean;
   onCreateAccount: (resident: ResidentAccountTarget) => void;
+  onEditResident: (resident: ResidentRow) => void;
+  onDeleteResident: (resident: ResidentRow) => void;
+  onStatusChange: (resident: ResidentRow, status: string) => void;
+  statusBusy: boolean;
 }) {
   return (
     <TableFrame caption="Registrasi penduduk desa" minWidthClass="min-w-[1070px]" busy={loading}>
@@ -469,28 +650,85 @@ function ResidentTable({
                   </div>
                 </td>
                 <td className={TD_CLASS}>
-                  {row.hasAccount ? (
-                    <Badge variant="approved" size="sm">
-                      Akun aktif
-                    </Badge>
-                  ) : canManageRegistry ? (
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      onClick={() =>
-                        onCreateAccount({
-                          id: row.id,
-                          nik: row.nik,
-                          fullName: row.fullName,
-                        })
-                      }
-                    >
-                      <KeyRound aria-hidden />
-                      Buat akun
-                    </Button>
-                  ) : (
-                    <span className="text-[10px] text-fg-subtle">Belum ada</span>
-                  )}
+                  <div className="flex items-center justify-between gap-1.5">
+                    {row.hasAccount ? (
+                      row.accountActive === false ? (
+                        <Badge variant="outline" size="sm" className={cn(TONE_CLASSES.rejected.chip)}>
+                          Akun nonaktif
+                        </Badge>
+                      ) : (
+                        <Badge variant="approved" size="sm">
+                          Akun aktif
+                        </Badge>
+                      )
+                    ) : canManageRegistry ? (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() =>
+                          onCreateAccount({
+                            id: row.id,
+                            nik: row.nik,
+                            fullName: row.fullName,
+                            hasAccount: false,
+                            accountActive: null,
+                          })
+                        }
+                      >
+                        <KeyRound aria-hidden />
+                        Buat akun
+                      </Button>
+                    ) : (
+                      <span className="text-[10px] text-fg-subtle">Belum ada</span>
+                    )}
+
+                    {canManageRegistry ? (
+                      <RowActions
+                        label={`Aksi untuk penduduk ${row.fullName}`}
+                        subject={formatNik(row.nik)}
+                        actions={[
+                          {
+                            id: "account",
+                            label: row.hasAccount ? "Kelola akun portal" : "Buat akun portal",
+                            icon: KeyRound,
+                            disabled: statusBusy,
+                            onSelect: () =>
+                              onCreateAccount({
+                                id: row.id,
+                                nik: row.nik,
+                                fullName: row.fullName,
+                                hasAccount: row.hasAccount,
+                                accountActive: row.accountActive,
+                              }),
+                          },
+                          {
+                            id: "edit",
+                            label: "Ubah data",
+                            icon: PencilLine,
+                            onSelect: () => onEditResident(row),
+                          },
+                          {
+                            id: "status",
+                            label: "Ubah status kependudukan",
+                            icon: UserCog,
+                            items: RESIDENT_STATUS_ORDER.map((value) => ({
+                              id: value,
+                              label: `${RESIDENT_STATUS[value].label}${row.status === value ? " (saat ini)" : ""}`,
+                              disabled: row.status === value || statusBusy,
+                              onSelect: () => onStatusChange(row, value),
+                            })),
+                          },
+                          {
+                            id: "delete",
+                            label: "Hapus penduduk",
+                            icon: Trash2,
+                            tone: "danger" as const,
+                            onSelect: () => onDeleteResident(row),
+                          },
+                        ]}
+                      />
+                    ) : null}
+                  </div>
                 </td>
               </tr>
             );
@@ -507,9 +745,22 @@ const FAMILY_COLUMNS = [
   { key: "members", label: "Anggota", width: "w-[110px]" },
   { key: "welfare", label: "Klasifikasi", width: "w-[150px]" },
   { key: "area", label: "Alamat", width: "w-[260px]" },
+  { key: "actions", label: "Aksi", width: "w-[64px]" },
 ] as const;
 
-function FamilyTable({ rows, loading }: { rows: FamilyRow[]; loading: boolean }) {
+function FamilyTable({
+  rows,
+  loading,
+  canManageRegistry,
+  onOpenDetail,
+  onDeleteFamily,
+}: {
+  rows: FamilyRow[];
+  loading: boolean;
+  canManageRegistry: boolean;
+  onOpenDetail: (familyId: string) => void;
+  onDeleteFamily: (family: FamilyRow) => void;
+}) {
   return (
     <TableFrame caption="Registrasi kartu keluarga" minWidthClass="min-w-[940px]" busy={loading}>
       <thead>
@@ -540,7 +791,11 @@ function FamilyTable({ rows, loading }: { rows: FamilyRow[]; loading: boolean })
           {rows.map((row) => {
             const tone = welfareTone(row.welfareClass);
             return (
-              <tr key={row.id} className="h-9 border-b border-line transition-colors hover:bg-surface-muted">
+              <tr
+                key={row.id}
+                className="h-9 cursor-pointer border-b border-line transition-colors hover:bg-surface-muted"
+                onClick={() => onOpenDetail(row.id)}
+              >
                 <td className={TD_CLASS}>
                   <span className="font-mono text-xs tabular-nums text-fg">
                     {formatKk(row.kkNumber)}
@@ -578,6 +833,31 @@ function FamilyTable({ rows, loading }: { rows: FamilyRow[]; loading: boolean })
                       {row.address}
                     </span>
                   </div>
+                </td>
+                <td className={TD_CLASS} onClick={(event) => event.stopPropagation()}>
+                  {canManageRegistry ? (
+                    <RowActions
+                      label={`Aksi untuk Kartu Keluarga ${formatKk(row.kkNumber)}`}
+                      subject={`${row.headName} · ${formatKk(row.kkNumber)}`}
+                      actions={[
+                        {
+                          id: "detail",
+                          label: "Lihat detail",
+                          icon: IdCard,
+                          onSelect: () => onOpenDetail(row.id),
+                        },
+                        {
+                          id: "delete",
+                          label: "Hapus kartu keluarga",
+                          icon: Trash2,
+                          tone: "danger" as const,
+                          onSelect: () => onDeleteFamily(row),
+                        },
+                      ]}
+                    />
+                  ) : (
+                    <span className="text-[10px] text-fg-subtle">—</span>
+                  )}
                 </td>
               </tr>
             );

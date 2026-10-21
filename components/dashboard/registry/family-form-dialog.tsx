@@ -3,6 +3,7 @@
 import {
   CircleAlert,
   LoaderCircle,
+  PencilLine,
   Save,
   Search,
   UserPlus,
@@ -17,14 +18,19 @@ import { Field, Input, Select } from "@/components/ui/primitives";
 import { WELFARE_CLASS_ORDER } from "@/lib/domain";
 import { formatKk, formatNik } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { familyDraftSchema, type FamilyDraft } from "@/lib/validators";
-import type { ResidentRow } from "@/db/queries";
+import {
+  familyDraftSchema,
+  familyUpdateSchema,
+  type FamilyDraft,
+} from "@/lib/validators";
+import type { FamilyDetail, ResidentRow } from "@/db/queries";
 import {
   errorFields,
   errorMessage,
   useCreateFamilyMutation,
   useListAreasQuery,
   useListRegistryQuery,
+  useUpdateFamilyMutation,
 } from "@/store/api";
 import { useAppDispatch } from "@/store";
 
@@ -38,25 +44,69 @@ const EMPTY_FORM = {
   welfareClass: "Sejahtera I",
 };
 
+/** Members are tracked with just what the picker chip prints. */
+type MemberPick = {
+  id: string;
+  nik: string;
+  fullName: string;
+  familyRelation: string | null;
+};
+
+function membersFromDetail(family: FamilyDetail): MemberPick[] {
+  return family.members.map((member) => ({
+    id: member.id,
+    nik: member.nik,
+    fullName: member.fullName,
+    familyRelation: member.relationLabel,
+  }));
+}
+
+function sameMembers(a: MemberPick[], b: MemberPick[]) {
+  if (a.length !== b.length) return false;
+  const ids = new Set(a.map((member) => member.id));
+  return b.every((member) => ids.has(member.id));
+}
+
 /**
- * "Tambah Kartu Keluarga" — opens a KK and moves the searched residents into it
- * in the same write, so `member_count` is never out of step with the registry.
+ * "Tambah Kartu Keluarga" / "Ubah Kartu Keluarga" — one dialog, two modes.
+ * Creating opens a KK and moves the searched residents into it; editing
+ * replaces the member set (removed members are released, added ones move in)
+ * and `member_count` is resynchronised on every touched family.
  */
 export function FamilyFormDialog({
   open,
   onOpenChange,
+  family = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  family?: FamilyDetail | null;
 }) {
   const dispatch = useAppDispatch();
   const areas = useListAreasQuery(undefined, { skip: !open });
   const [createFamily, createState] = useCreateFamilyMutation();
+  const [updateFamily, updateState] = useUpdateFamilyMutation();
 
-  const [form, setForm] = React.useState(EMPTY_FORM);
+  const isEdit = family !== null;
+  // The workspace remounts this dialog (via `key`) for every target, so the
+  // initial state can be derived once from props — no re-seeding effect needed.
+  const initialForm = family
+    ? {
+        kkNumber: family.kkNumber,
+        headName: family.headName,
+        neighborhoodId: family.neighborhoodId,
+        address: family.address,
+        welfareClass: family.welfareClass ?? "Sejahtera I",
+      }
+    : EMPTY_FORM;
+  const initialMembers = family ? membersFromDetail(family) : [];
+
+  const [form, setForm] = React.useState(initialForm);
+  const [seed] = React.useState(initialForm);
   const [errors, setErrors] = React.useState<Record<string, string[]>>({});
   const [memberQuery, setMemberQuery] = React.useState("");
-  const [members, setMembers] = React.useState<ResidentRow[]>([]);
+  const [members, setMembers] = React.useState<MemberPick[]>(initialMembers);
+  const [seedMembers] = React.useState<MemberPick[]>(initialMembers);
 
   const search = useListRegistryQuery(
     { type: "residents", q: memberQuery, pageSize: 10 },
@@ -80,14 +130,62 @@ export function FamilyFormDialog({
     setMembers((current) =>
       current.some((row) => row.id === resident.id)
         ? current
-        : [...current, resident],
+        : [
+            ...current,
+            {
+              id: resident.id,
+              nik: resident.nik,
+              fullName: resident.fullName,
+              familyRelation: resident.familyRelation,
+            },
+          ],
     );
     setMemberQuery("");
   };
 
+  const pending = createState.isLoading || updateState.isLoading;
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setErrors({});
+
+    const membersChanged = !sameMembers(seedMembers, members);
+
+    if (isEdit && family) {
+      const patch: Record<string, unknown> = {};
+      for (const key of Object.keys(seed) as (keyof typeof EMPTY_FORM)[]) {
+        if (seed[key] !== form[key]) patch[key] = form[key];
+      }
+      if (membersChanged) patch.memberIds = members.map((member) => member.id);
+      if (!Object.keys(patch).length) {
+        setErrors({ _form: ["Tidak ada data yang diubah."] });
+        return;
+      }
+
+      const parsed = familyUpdateSchema.safeParse(patch);
+      if (!parsed.success) {
+        const fieldErrors: Record<string, string[]> = {};
+        for (const issue of parsed.error.issues) {
+          const key = issue.path.join(".") || "_form";
+          fieldErrors[key] = [...(fieldErrors[key] ?? []), issue.message];
+        }
+        setErrors(fieldErrors);
+        return;
+      }
+
+      try {
+        const result = await updateFamily({ id: family.id, body: parsed.data }).unwrap();
+        toastFromMutation(dispatch, {
+          tone: "success",
+          title: "Kartu keluarga diperbarui",
+          body: `KK ${formatKk(result.family.kkNumber)} atas nama ${result.family.headName} kini beranggotakan ${result.family.memberCount} orang.`,
+        });
+        onOpenChange(false);
+      } catch (error) {
+        setErrors(errorFields(error));
+      }
+      return;
+    }
 
     const draft: FamilyDraft = {
       kkNumber: form.kkNumber,
@@ -120,10 +218,12 @@ export function FamilyFormDialog({
     } catch (error) {
       setErrors(errorFields(error));
     }
-  }
+  };
+
   const candidates = ((search.data?.rows as ResidentRow[] | undefined) ?? []).filter(
     (row) => !members.some((member) => member.id === row.id),
   );
+  const activeError = isEdit ? updateState : createState;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -135,21 +235,22 @@ export function FamilyFormDialog({
         <form onSubmit={submit} noValidate>
           <div className="mb-4 flex items-start gap-2.5 pr-6">
             <span className="grid size-8 shrink-0 place-items-center rounded-sm border border-civic/25 bg-civic-soft text-civic">
-              <Users className="size-4" aria-hidden />
+              {isEdit ? <PencilLine className="size-4" aria-hidden /> : <Users className="size-4" aria-hidden />}
             </span>
             <div>
               <h2
                 id="family-form-title"
                 className="font-display text-sm font-bold tracking-[-0.01em] text-fg"
               >
-                Tambah Kartu Keluarga
+                {isEdit ? "Ubah Kartu Keluarga" : "Tambah Kartu Keluarga"}
               </h2>
               <p
                 id="family-form-desc"
                 className="mt-0.5 text-2xs leading-4 text-fg-subtle"
               >
-                Nomor KK harus unik. Anggota yang dipilih dipindahkan ke kartu
-                keluarga ini dan jumlah anggota diperbarui otomatis.
+                {isEdit
+                  ? "Perbarui data KK atau susunan anggota. Anggota yang dikeluarkan kembali tercatat tanpa KK; anggota baru dipindahkan dari KK sebelumnya."
+                  : "Nomor KK harus unik. Anggota yang dipilih dipindahkan ke kartu keluarga ini dan jumlah anggota diperbarui otomatis."}
               </p>
             </div>
           </div>
@@ -347,13 +448,13 @@ export function FamilyFormDialog({
             ) : null}
           </div>
 
-          {errors._form?.length || createState.isError ? (
+          {errors._form?.length || activeError.isError ? (
             <p
               role="alert"
               className="mt-3 flex items-start gap-1.5 rounded-sm border border-rejected-line/60 bg-rejected-bg px-2.5 py-2 text-2xs text-rejected"
             >
               <CircleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
-              {errors._form?.[0] ?? errorMessage(createState.error)}
+              {errors._form?.[0] ?? errorMessage(activeError.error)}
             </p>
           ) : null}
 
@@ -363,22 +464,17 @@ export function FamilyFormDialog({
               variant="ghost"
               size="sm"
               onClick={() => onOpenChange(false)}
-              disabled={createState.isLoading}
+              disabled={pending}
             >
               Batal
             </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              size="sm"
-              disabled={createState.isLoading}
-            >
-              {createState.isLoading ? (
+            <Button type="submit" variant="primary" size="sm" disabled={pending}>
+              {pending ? (
                 <LoaderCircle className="animate-spin" aria-hidden />
               ) : (
                 <Save aria-hidden />
               )}
-              Simpan kartu keluarga
+              {isEdit ? "Simpan perubahan" : "Simpan kartu keluarga"}
             </Button>
           </div>
         </form>
