@@ -15,6 +15,20 @@
       "when": 1791875735640,
       "tag": "0001_material_starhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792138393493,
+      "tag": "0002_sour_argent",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792138447140,
+      "tag": "0003_true_next_avengers",
+      "breakpoints": true
     }
   ]
 }
