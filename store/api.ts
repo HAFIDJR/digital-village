@@ -5,15 +5,19 @@ import {
 } from "@reduxjs/toolkit/query/react";
 
 import type {
+  AnnouncementDetail,
   AnnouncementEntry,
   ArchivePage,
   AreaOverview,
+  FamilyDetail,
   FamilyReport,
   FamilyRow,
   LetterTypeEntry,
+  NotificationDetail,
   NotificationEntry,
   QueuePage,
   RegistryPage,
+  ReportAttachmentView,
   ReportPage,
   RequestDetail,
   ResidentAnnouncementEntry,
@@ -30,13 +34,22 @@ import type {
 } from "@/db/queries";
 import type {
   AnnouncementDraft,
+  AnnouncementUpdate,
   FamilyDraft,
+  FamilyUpdate,
+  HamletDraft,
+  HamletUpdate,
+  NeighborhoodDraft,
+  NeighborhoodUpdate,
   QueueQuery,
   RegistryQuery,
   ReportAdvance,
   ReportDraft,
   ReportQuery,
+  ReportUpdate,
   ResidentAccountDraft,
+  ResidentAccountReset,
+  ResidentAccountStatus,
   ResidentDraft,
   ResidentUpdate,
   VerifyRequestInput,
@@ -253,6 +266,7 @@ export type CreateReportResponse = {
     subject: string;
     status: string;
     priority: string;
+    attachmentCount: number;
     submittedAt: string;
   };
 };
@@ -262,7 +276,157 @@ export type AdvanceReportResponse = {
   ticket: string;
   status: string;
   resolvedAt: string | null;
+  rejectionReason: string | null;
   responseCount: number;
+};
+
+export type DeleteResidentResponse = {
+  ok: true;
+  resident: { id: string; nik: string; fullName: string };
+};
+
+export type ResidentAccountActionResponse = {
+  ok: true;
+  account: {
+    id: string;
+    residentId: string;
+    nik: string;
+    active: boolean;
+    sessionsRevoked: number;
+  };
+};
+
+export type FamilyDetailResponse = { ok: true; family: FamilyDetail };
+
+export type UpdateFamilyResponse = {
+  ok: true;
+  family: {
+    id: string;
+    kkNumber: string;
+    headName: string;
+    memberCount: number;
+    neighborhoodId: string;
+  };
+};
+
+export type DeleteFamilyResponse = {
+  ok: true;
+  family: {
+    id: string;
+    kkNumber: string;
+    headName: string;
+    releasedMemberIds: string[];
+  };
+};
+
+export type HamletResponse = {
+  ok: true;
+  hamlet: {
+    id: string;
+    name: string;
+    code: string;
+    headName: string | null;
+  };
+};
+
+export type DeleteHamletResponse = {
+  ok: true;
+  hamlet: { id: string; code: string; name: string };
+};
+
+export type NeighborhoodResponse = {
+  ok: true;
+  neighborhood: {
+    id: string;
+    hamletId: string;
+    rt: number;
+    rw: number;
+    headName: string | null;
+  };
+};
+
+export type DeleteNeighborhoodResponse = {
+  ok: true;
+  neighborhood: { id: string; rt: number; rw: number; hamletId: string };
+};
+
+export type AnnouncementDetailResponse = {
+  ok: true;
+  announcement: AnnouncementDetail;
+};
+
+export type UpdateAnnouncementResponse = {
+  ok: true;
+  announcement: {
+    id: string;
+    title: string;
+    slug: string;
+    status: string;
+    channel: string;
+    priority: string;
+    pinned: boolean;
+    publishAt: string | null;
+    expiresAt: string | null;
+  };
+};
+
+export type DeleteAnnouncementResponse = {
+  ok: true;
+  announcement: {
+    id: string;
+    title: string;
+    status: string;
+    wasPublished: boolean;
+  };
+};
+
+export type NotificationDetailResponse = {
+  ok: true;
+  notification: NotificationDetail;
+};
+
+export type ReportAttachmentsResponse = {
+  ok: true;
+  attachments: ReportAttachmentView[];
+};
+
+export type AddReportAttachmentsResponse = {
+  ok: true;
+  reportId: string;
+  ticket: string;
+  attachmentCount: number;
+  attachments: ReportAttachmentView[];
+};
+
+export type RemoveReportAttachmentResponse = {
+  ok: true;
+  reportId: string;
+  attachmentCount: number;
+};
+
+export type ResidentReportResponse = {
+  ok: true;
+  report: ResidentReportEntry;
+  attachments: ReportAttachmentView[];
+};
+
+export type UpdateResidentReportResponse = {
+  ok: true;
+  report: {
+    id: string;
+    ticket: string;
+    category: string;
+    subject: string;
+    body: string;
+    status: string;
+    priority: string;
+    neighborhoodId: string | null;
+  };
+};
+
+export type DeleteResidentReportResponse = {
+  ok: true;
+  report: { id: string; ticket: string; subject: string };
 };
 
 export type CreateRequestResponse = {
@@ -480,7 +644,38 @@ export const villageApi = createApi({
       query: () => ({ url: "registry/report" }),
       providesTags: [TAG.Registry],
     }),
+    getFamilyDetail: build.query<FamilyDetailResponse, string>({
+      query: (id) => ({ url: `registry/families/${id}` }),
+      providesTags: [TAG.Registry],
+    }),
+    getAnnouncement: build.query<AnnouncementDetailResponse, string>({
+      query: (id) => ({ url: `announcements/${id}` }),
+      providesTags: [TAG.Announcements],
+    }),
+    getNotificationDetail: build.query<NotificationDetailResponse, string>({
+      query: (id) => ({ url: `notifications/${id}` }),
+      providesTags: [TAG.Notifications],
+    }),
+    listReportAttachments: build.query<ReportAttachmentsResponse, string>({
+      query: (reportId) => ({ url: `reports/${reportId}/attachments` }),
+      providesTags: [TAG.Reports],
+    }),
+    getResidentReport: build.query<ResidentReportResponse, string>({
+      query: (id) => ({ url: `warga/reports/${id}` }),
+      providesTags: [TAG.ResidentReports],
+    }),
     createReport: build.mutation<CreateReportResponse, ReportDraft>({
+      query: (body) => ({ url: "reports", method: "POST", body }),
+      invalidatesTags: () => [
+        TAG.ResidentReports,
+        TAG.Reports,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    /** Portal filing with photos: the component builds the FormData itself. */
+    createReportWithFiles: build.mutation<CreateReportResponse, FormData>({
       query: (body) => ({ url: "reports", method: "POST", body }),
       invalidatesTags: () => [
         TAG.ResidentReports,
@@ -506,6 +701,86 @@ export const villageApi = createApi({
         TAG.Activity,
       ],
     }),
+    /** Staff adds photos to a report (loket follow-up); multipart FormData. */
+    addReportAttachments: build.mutation<
+      AddReportAttachmentsResponse,
+      { reportId: string; body: FormData }
+    >({
+      query: ({ reportId, body }) => ({
+        url: `reports/${reportId}/attachments`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.Reports,
+        TAG.ResidentReports,
+        TAG.Activity,
+      ],
+    }),
+    removeReportAttachment: build.mutation<
+      RemoveReportAttachmentResponse,
+      { reportId: string; attachmentId: string }
+    >({
+      query: ({ reportId, attachmentId }) => ({
+        url: `reports/${reportId}/attachments/${attachmentId}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: () => [
+        TAG.Reports,
+        TAG.ResidentReports,
+        TAG.Activity,
+      ],
+    }),
+
+    updateResidentReport: build.mutation<
+      UpdateResidentReportResponse,
+      { id: string; body: ReportUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `warga/reports/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.ResidentReports,
+        TAG.Reports,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    deleteResidentReport: build.mutation<DeleteResidentReportResponse, string>({
+      query: (id) => ({ url: `warga/reports/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.ResidentReports,
+        TAG.Reports,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    addResidentReportAttachments: build.mutation<
+      AddReportAttachmentsResponse,
+      { reportId: string; body: FormData }
+    >({
+      query: ({ reportId, body }) => ({
+        url: `warga/reports/${reportId}/attachments`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: () => [TAG.ResidentReports],
+    }),
+    removeResidentReportAttachment: build.mutation<
+      RemoveReportAttachmentResponse,
+      { reportId: string; attachmentId: string }
+    >({
+      query: ({ reportId, attachmentId }) => ({
+        url: `warga/reports/${reportId}/attachments/${attachmentId}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: () => [TAG.ResidentReports],
+    }),
+
     createRequest: build.mutation<CreateRequestResponse, FormData>({
       query: (body) => ({ url: "requests", method: "POST", body }),
       invalidatesTags: () => [
@@ -562,6 +837,135 @@ export const villageApi = createApi({
       query: (body) => ({ url: "registry/accounts", method: "POST", body }),
       invalidatesTags: () => [TAG.Registry, TAG.Workspace, TAG.Activity],
     }),
+    deleteResident: build.mutation<DeleteResidentResponse, string>({
+      query: (id) => ({ url: `registry/residents/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.Registry,
+        TAG.Areas,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    resetResidentAccountPassword: build.mutation<
+      ResidentAccountActionResponse,
+      ResidentAccountReset
+    >({
+      query: (body) => ({
+        url: `registry/accounts/${body.residentId}/password`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: () => [TAG.Registry, TAG.Workspace, TAG.Activity],
+    }),
+    setResidentAccountActive: build.mutation<
+      ResidentAccountActionResponse,
+      ResidentAccountStatus
+    >({
+      query: (body) => ({
+        url: `registry/accounts/${body.residentId}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [TAG.Registry, TAG.Workspace, TAG.Activity],
+    }),
+    updateFamily: build.mutation<
+      UpdateFamilyResponse,
+      { id: string; body: FamilyUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `registry/families/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.Registry,
+        TAG.Areas,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    deleteFamily: build.mutation<DeleteFamilyResponse, string>({
+      query: (id) => ({ url: `registry/families/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.Registry,
+        TAG.Areas,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+
+    // Wilayah administratif (capability: manageArea)
+    createHamlet: build.mutation<HamletResponse, HamletDraft>({
+      query: (body) => ({ url: "registry/hamlets", method: "POST", body }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    updateHamlet: build.mutation<
+      HamletResponse,
+      { id: string; body: HamletUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `registry/hamlets/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    deleteHamlet: build.mutation<DeleteHamletResponse, string>({
+      query: (id) => ({ url: `registry/hamlets/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    createNeighborhood: build.mutation<NeighborhoodResponse, NeighborhoodDraft>({
+      query: (body) => ({ url: "registry/neighborhoods", method: "POST", body }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+      ],
+    }),
+    updateNeighborhood: build.mutation<
+      NeighborhoodResponse,
+      { id: string; body: NeighborhoodUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `registry/neighborhoods/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
+    deleteNeighborhood: build.mutation<DeleteNeighborhoodResponse, string>({
+      query: (id) => ({ url: `registry/neighborhoods/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.Areas,
+        TAG.Registry,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
 
     verifyRequest: build.mutation<
       VerifyResponse,
@@ -607,6 +1011,26 @@ export const villageApi = createApi({
       query: (body) => ({ url: "announcements", method: "POST", body }),
       invalidatesTags: () => [TAG.Announcements, TAG.Workspace, TAG.Activity],
     }),
+    updateAnnouncement: build.mutation<
+      UpdateAnnouncementResponse,
+      { id: string; body: AnnouncementUpdate }
+    >({
+      query: ({ id, body }) => ({
+        url: `announcements/${id}`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: () => [TAG.Announcements, TAG.Workspace, TAG.Activity],
+    }),
+    deleteAnnouncement: build.mutation<DeleteAnnouncementResponse, string>({
+      query: (id) => ({ url: `announcements/${id}`, method: "DELETE" }),
+      invalidatesTags: () => [
+        TAG.Announcements,
+        TAG.Workspace,
+        TAG.Activity,
+        TAG.Notifications,
+      ],
+    }),
 
     markNotificationsRead: build.mutation<
       { ok: true; updated: number },
@@ -617,6 +1041,10 @@ export const villageApi = createApi({
         method: "POST",
         body: body ?? {},
       }),
+      invalidatesTags: [TAG.Notifications, TAG.Workspace],
+    }),
+    markNotificationRead: build.mutation<{ ok: true; id: string }, string>({
+      query: (id) => ({ url: `notifications/${id}`, method: "PATCH" }),
       invalidatesTags: [TAG.Notifications, TAG.Workspace],
     }),
     // Auth
@@ -677,18 +1105,44 @@ export const {
   useListResidentAnnouncementsQuery,
   useListResidentLetterTypesQuery,
   useGetRegistryReportQuery,
+  useGetFamilyDetailQuery,
+  useGetAnnouncementQuery,
+  useGetNotificationDetailQuery,
+  useListReportAttachmentsQuery,
+  useGetResidentReportQuery,
   useCreateReportMutation,
+  useCreateReportWithFilesMutation,
   useAdvanceReportMutation,
+  useAddReportAttachmentsMutation,
+  useRemoveReportAttachmentMutation,
+  useUpdateResidentReportMutation,
+  useDeleteResidentReportMutation,
+  useAddResidentReportAttachmentsMutation,
+  useRemoveResidentReportAttachmentMutation,
   useCreateRequestMutation,
   useMarkResidentAnnouncementsReadMutation,
   useCreateResidentMutation,
   useUpdateResidentMutation,
+  useDeleteResidentMutation,
   useCreateFamilyMutation,
+  useUpdateFamilyMutation,
+  useDeleteFamilyMutation,
   useCreateResidentAccountMutation,
+  useResetResidentAccountPasswordMutation,
+  useSetResidentAccountActiveMutation,
+  useCreateHamletMutation,
+  useUpdateHamletMutation,
+  useDeleteHamletMutation,
+  useCreateNeighborhoodMutation,
+  useUpdateNeighborhoodMutation,
+  useDeleteNeighborhoodMutation,
   useVerifyRequestMutation,
   useSignRequestMutation,
   usePublishAnnouncementMutation,
+  useUpdateAnnouncementMutation,
+  useDeleteAnnouncementMutation,
   useMarkNotificationsReadMutation,
+  useMarkNotificationReadMutation,
   useLoginMutation,
   useWargaLoginMutation,
   useLogoutMutation,
@@ -703,6 +1157,17 @@ export function letterPdfUrl(id: string, mode: "draft" | "final", copies = 1) {
 }
 export function attachmentFileUrl(requestId: string, attachmentId: string) {
   return `/api/requests/${requestId}/attachments/${attachmentId}`;
+}
+/** Staff-side inline photo URL for the report drawer. */
+export function reportAttachmentFileUrl(reportId: string, attachmentId: string) {
+  return `/api/reports/${reportId}/attachments/${attachmentId}`;
+}
+/** Resident-side inline photo URL for the portal report views. */
+export function residentReportAttachmentFileUrl(
+  reportId: string,
+  attachmentId: string,
+) {
+  return `/api/warga/reports/${reportId}/attachments/${attachmentId}`;
 }
 
 export type { Tag };

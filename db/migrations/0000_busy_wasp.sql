@@ -1,4 +1,4 @@
-CREATE TYPE "public"."activity_kind" AS ENUM('PENGAJUAN_BARU', 'VERIFIKASI_BERKAS', 'PENOLAKAN', 'PERSETUJUAN', 'TANDA_TANGAN', 'CETAK_SURAT', 'MUTASI_PENDUDUK', 'PENGUMUMAN', 'MASUK_LOG', 'KELUAR_LOG', 'AKTIVASI_TTD', 'KEAMANAN_AKUN');--> statement-breakpoint
+CREATE TYPE "public"."activity_kind" AS ENUM('PENGAJUAN_BARU', 'VERIFIKASI_BERKAS', 'PENOLAKAN', 'PERSETUJUAN', 'TANDA_TANGAN', 'CETAK_SURAT', 'MUTASI_PENDUDUK', 'PENDAFTARAN_PENDUDUK', 'LAPORAN_BARU', 'PENGUMUMAN', 'MASUK_LOG', 'KELUAR_LOG', 'AKTIVASI_TTD', 'KEAMANAN_AKUN', 'PERUBAHAN_DATA', 'PENGHAPUSAN_DATA', 'PERUBAHAN_WILAYAH');--> statement-breakpoint
 CREATE TYPE "public"."announcement_channel" AS ENUM('WEBSITE_DESA', 'PAPAN_INFORMASI', 'PENGUMUMAN_WA');--> statement-breakpoint
 CREATE TYPE "public"."announcement_status" AS ENUM('DRAF', 'TERJADWAL', 'TERBIT', 'DIARSIPKAN');--> statement-breakpoint
 CREATE TYPE "public"."attachment_status" AS ENUM('LENGKAP', 'BURAM', 'TIDAK_ADA', 'TIDAK_RELEVAN');--> statement-breakpoint
@@ -52,6 +52,7 @@ CREATE TABLE "citizen_reports" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"ticket" varchar(20) NOT NULL,
 	"village_id" uuid NOT NULL,
+	"reporter_resident_id" uuid,
 	"reporter_name" varchar(120) NOT NULL,
 	"reporter_nik" varchar(16),
 	"reporter_phone" varchar(32),
@@ -63,6 +64,10 @@ CREATE TABLE "citizen_reports" (
 	"priority" "priority" DEFAULT 'NORMAL' NOT NULL,
 	"handled_by_staff_id" uuid,
 	"response_count" smallint DEFAULT 0 NOT NULL,
+	"attachment_count" smallint DEFAULT 0 NOT NULL,
+	"rejection_reason" text,
+	"rejected_at" timestamp with time zone,
+	"rejected_by_staff_id" uuid,
 	"submitted_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"resolved_at" timestamp with time zone,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -186,6 +191,14 @@ CREATE TABLE "neighborhoods" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "notification_reads" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"village_id" uuid NOT NULL,
+	"notification_id" uuid NOT NULL,
+	"staff_id" uuid NOT NULL,
+	"read_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "notifications" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"village_id" uuid NOT NULL,
@@ -194,8 +207,26 @@ CREATE TABLE "notifications" (
 	"body" varchar(320),
 	"severity" varchar(16) DEFAULT 'INFO' NOT NULL,
 	"href" text,
+	"subject_type" varchar(40),
+	"subject_id" uuid,
+	"subject_ref" varchar(40),
+	"meta" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"read_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "report_attachments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"report_id" uuid NOT NULL,
+	"file_name" varchar(200) NOT NULL,
+	"storage_key" text NOT NULL,
+	"mime_type" varchar(80) NOT NULL,
+	"size_bytes" integer NOT NULL,
+	"width" smallint,
+	"height" smallint,
+	"caption" varchar(160),
+	"uploaded_by_resident_id" uuid,
+	"uploaded_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "resident_accounts" (
@@ -210,6 +241,14 @@ CREATE TABLE "resident_accounts" (
 	"last_login_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "resident_announcement_reads" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"village_id" uuid NOT NULL,
+	"resident_id" uuid NOT NULL,
+	"announcement_id" uuid NOT NULL,
+	"read_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "resident_mutations" (
@@ -330,8 +369,10 @@ ALTER TABLE "activity_log" ADD CONSTRAINT "activity_log_actor_staff_id_staff_id_
 ALTER TABLE "announcements" ADD CONSTRAINT "announcements_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "announcements" ADD CONSTRAINT "announcements_author_staff_id_staff_id_fk" FOREIGN KEY ("author_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "citizen_reports" ADD CONSTRAINT "citizen_reports_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "citizen_reports" ADD CONSTRAINT "citizen_reports_reporter_resident_id_residents_id_fk" FOREIGN KEY ("reporter_resident_id") REFERENCES "public"."residents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "citizen_reports" ADD CONSTRAINT "citizen_reports_neighborhood_id_neighborhoods_id_fk" FOREIGN KEY ("neighborhood_id") REFERENCES "public"."neighborhoods"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "citizen_reports" ADD CONSTRAINT "citizen_reports_handled_by_staff_id_staff_id_fk" FOREIGN KEY ("handled_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "citizen_reports" ADD CONSTRAINT "citizen_reports_rejected_by_staff_id_staff_id_fk" FOREIGN KEY ("rejected_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "daily_stats" ADD CONSTRAINT "daily_stats_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "families" ADD CONSTRAINT "families_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "families" ADD CONSTRAINT "families_neighborhood_id_neighborhoods_id_fk" FOREIGN KEY ("neighborhood_id") REFERENCES "public"."neighborhoods"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -347,10 +388,18 @@ ALTER TABLE "letter_requests" ADD CONSTRAINT "letter_requests_assigned_staff_id_
 ALTER TABLE "letter_requirements" ADD CONSTRAINT "letter_requirements_letter_type_id_letter_types_id_fk" FOREIGN KEY ("letter_type_id") REFERENCES "public"."letter_types"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "letter_types" ADD CONSTRAINT "letter_types_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "neighborhoods" ADD CONSTRAINT "neighborhoods_hamlet_id_hamlets_id_fk" FOREIGN KEY ("hamlet_id") REFERENCES "public"."hamlets"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "notification_reads" ADD CONSTRAINT "notification_reads_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "notification_reads" ADD CONSTRAINT "notification_reads_notification_id_notifications_id_fk" FOREIGN KEY ("notification_id") REFERENCES "public"."notifications"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "notification_reads" ADD CONSTRAINT "notification_reads_staff_id_staff_id_fk" FOREIGN KEY ("staff_id") REFERENCES "public"."staff"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_recipient_staff_id_staff_id_fk" FOREIGN KEY ("recipient_staff_id") REFERENCES "public"."staff"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "report_attachments" ADD CONSTRAINT "report_attachments_report_id_citizen_reports_id_fk" FOREIGN KEY ("report_id") REFERENCES "public"."citizen_reports"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "report_attachments" ADD CONSTRAINT "report_attachments_uploaded_by_resident_id_residents_id_fk" FOREIGN KEY ("uploaded_by_resident_id") REFERENCES "public"."residents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_accounts" ADD CONSTRAINT "resident_accounts_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_accounts" ADD CONSTRAINT "resident_accounts_resident_id_residents_id_fk" FOREIGN KEY ("resident_id") REFERENCES "public"."residents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "resident_announcement_reads" ADD CONSTRAINT "resident_announcement_reads_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "resident_announcement_reads" ADD CONSTRAINT "resident_announcement_reads_resident_id_residents_id_fk" FOREIGN KEY ("resident_id") REFERENCES "public"."residents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "resident_announcement_reads" ADD CONSTRAINT "resident_announcement_reads_announcement_id_announcements_id_fk" FOREIGN KEY ("announcement_id") REFERENCES "public"."announcements"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_mutations" ADD CONSTRAINT "resident_mutations_resident_id_residents_id_fk" FOREIGN KEY ("resident_id") REFERENCES "public"."residents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "resident_mutations" ADD CONSTRAINT "resident_mutations_recorded_by_staff_id_staff_id_fk" FOREIGN KEY ("recorded_by_staff_id") REFERENCES "public"."staff"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "residents" ADD CONSTRAINT "residents_village_id_villages_id_fk" FOREIGN KEY ("village_id") REFERENCES "public"."villages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -368,6 +417,7 @@ CREATE UNIQUE INDEX "announcements_slug_uq" ON "announcements" USING btree ("vil
 CREATE INDEX "announcements_status_idx" ON "announcements" USING btree ("village_id","status","publish_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "citizen_reports_ticket_uq" ON "citizen_reports" USING btree ("ticket");--> statement-breakpoint
 CREATE INDEX "citizen_reports_status_idx" ON "citizen_reports" USING btree ("village_id","status","submitted_at");--> statement-breakpoint
+CREATE INDEX "citizen_reports_reporter_idx" ON "citizen_reports" USING btree ("reporter_resident_id","submitted_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "families_kk_uq" ON "families" USING btree ("kk_number");--> statement-breakpoint
 CREATE INDEX "families_neighborhood_idx" ON "families" USING btree ("neighborhood_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "hamlets_village_code_uq" ON "hamlets" USING btree ("village_id","code");--> statement-breakpoint
@@ -381,10 +431,16 @@ CREATE INDEX "letter_requests_name_idx" ON "letter_requests" USING btree ("appli
 CREATE UNIQUE INDEX "letter_requirements_uq" ON "letter_requirements" USING btree ("letter_type_id","doc_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "letter_types_village_code_uq" ON "letter_types" USING btree ("village_id","code");--> statement-breakpoint
 CREATE UNIQUE INDEX "neighborhoods_hamlet_rt_rw_uq" ON "neighborhoods" USING btree ("hamlet_id","rt","rw");--> statement-breakpoint
+CREATE UNIQUE INDEX "notification_reads_uq" ON "notification_reads" USING btree ("notification_id","staff_id");--> statement-breakpoint
+CREATE INDEX "notification_reads_staff_idx" ON "notification_reads" USING btree ("staff_id","read_at");--> statement-breakpoint
 CREATE INDEX "notifications_recipient_idx" ON "notifications" USING btree ("recipient_staff_id","read_at","created_at");--> statement-breakpoint
+CREATE INDEX "notifications_subject_idx" ON "notifications" USING btree ("subject_type","subject_id");--> statement-breakpoint
+CREATE INDEX "report_attachments_report_idx" ON "report_attachments" USING btree ("report_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "resident_accounts_resident_uq" ON "resident_accounts" USING btree ("resident_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "resident_accounts_nik_uq" ON "resident_accounts" USING btree ("nik");--> statement-breakpoint
 CREATE INDEX "resident_accounts_village_idx" ON "resident_accounts" USING btree ("village_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "resident_announcement_reads_uq" ON "resident_announcement_reads" USING btree ("resident_id","announcement_id");--> statement-breakpoint
+CREATE INDEX "resident_announcement_reads_village_idx" ON "resident_announcement_reads" USING btree ("village_id");--> statement-breakpoint
 CREATE INDEX "resident_mutations_resident_idx" ON "resident_mutations" USING btree ("resident_id","effective_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "residents_nik_uq" ON "residents" USING btree ("nik");--> statement-breakpoint
 CREATE INDEX "residents_name_idx" ON "residents" USING btree ("full_name");--> statement-breakpoint

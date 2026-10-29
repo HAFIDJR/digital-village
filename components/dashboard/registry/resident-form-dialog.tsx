@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert, LoaderCircle, Save, UserPlus } from "lucide-react";
+import { CircleAlert, LoaderCircle, PencilLine, Save, UserPlus } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   Input,
   Select,
 } from "@/components/ui/primitives";
+import type { ResidentRow } from "@/db/queries";
 import {
   EDUCATION_LEVEL,
   EDUCATION_LEVEL_ORDER,
@@ -19,13 +20,21 @@ import {
   GENDER_LABEL,
   MARITAL_STATUS_LABEL,
   RELIGION_LABEL,
+  RESIDENT_STATUS,
+  RESIDENT_STATUS_ORDER,
 } from "@/lib/domain";
-import { residentDraftSchema, type ResidentDraft } from "@/lib/validators";
+import { formatNik } from "@/lib/format";
+import {
+  residentDraftSchema,
+  residentUpdateSchema,
+  type ResidentDraft,
+} from "@/lib/validators";
 import {
   errorFields,
   errorMessage,
   useCreateResidentMutation,
   useListAreasQuery,
+  useUpdateResidentMutation,
 } from "@/store/api";
 import { useAppDispatch } from "@/store";
 
@@ -47,31 +56,75 @@ const EMPTY_FORM = {
   address: "",
   phone: "",
   documentsVerified: false,
+  status: "AKTIF",
 };
 
-/**
- * "Tambah Penduduk" — registers a resident with full demographic detail.
- * The NIK is checked for uniqueness on the server and the duplicate surfaces as
- * a field error next to the input.
- */
+type FormState = typeof EMPTY_FORM;
+
+function formFromResident(resident: ResidentRow): FormState {
+  return {
+    nik: resident.nik,
+    fullName: resident.fullName,
+    gender: resident.gender as ResidentDraft["gender"],
+    birthPlace: resident.birthPlace,
+    birthDate: resident.birthDate.slice(0, 10),
+    religion: resident.religion as ResidentDraft["religion"],
+    maritalStatus: resident.maritalStatus as ResidentDraft["maritalStatus"],
+    education: resident.education ?? "",
+    occupation: resident.occupation ?? "",
+    nationality: resident.nationality,
+    familyRelation: resident.familyRelation ?? "KEPALA KELUARGA",
+    neighborhoodId: resident.neighborhoodId,
+    address: resident.address,
+    phone: resident.phone ?? "",
+    documentsVerified: resident.documentsVerified,
+    status: resident.status,
+  };
+}
+
+/** Only the fields the officer actually touched go to the server. */
+function diffPatch(seed: FormState, next: FormState) {
+  const patch: Record<string, unknown> = {};
+  for (const key of Object.keys(seed) as (keyof FormState)[]) {
+    if (key === "nik") continue; // NIK is immutable after registration
+    if (seed[key] !== next[key]) {
+      const value = next[key];
+      patch[key] = value === "" ? (key === "phone" ? null : undefined) : value;
+      if (value === "" && key !== "phone") delete patch[key];
+    }
+  }
+  if (next.education.trim() === "" && patch.education !== undefined) patch.education = undefined;
+  if (next.occupation.trim() === "" && patch.occupation !== undefined) patch.occupation = undefined;
+  if (next.phone.trim() === "" && patch.phone !== undefined) patch.phone = null;
+  return patch;
+}
+
 export function ResidentFormDialog({
   open,
   onOpenChange,
+  resident = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  resident?: ResidentRow | null;
 }) {
   const dispatch = useAppDispatch();
   const areas = useListAreasQuery(undefined, { skip: !open });
   const [createResident, createState] = useCreateResidentMutation();
+  const [updateResident, updateState] = useUpdateResidentMutation();
 
-  const [form, setForm] = React.useState(EMPTY_FORM);
+  const isEdit = resident !== null;
+  // The workspace remounts this dialog (via `key`) for every target, so the
+  // initial state can be derived once from props — no re-seeding effect needed.
+  const [form, setForm] = React.useState<FormState>(() =>
+    resident ? formFromResident(resident) : EMPTY_FORM,
+  );
+  const [seed] = React.useState<FormState>(() =>
+    resident ? formFromResident(resident) : EMPTY_FORM,
+  );
   const [errors, setErrors] = React.useState<Record<string, string[]>>({});
 
-  const set = <K extends keyof typeof EMPTY_FORM>(
-    key: K,
-    value: (typeof EMPTY_FORM)[K],
-  ) => {
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
     setErrors((current) => {
       if (!current[key as string]) return current;
@@ -81,9 +134,40 @@ export function ResidentFormDialog({
     });
   };
 
+  const pending = createState.isLoading || updateState.isLoading;
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setErrors({});
+
+    if (isEdit && resident) {
+      const patch = diffPatch(seed, form);
+      const parsed = residentUpdateSchema.safeParse(patch);
+      if (!parsed.success) {
+        const fieldErrors: Record<string, string[]> = {};
+        for (const issue of parsed.error.issues) {
+          const key = issue.path.join(".") || "_form";
+          fieldErrors[key] = [...(fieldErrors[key] ?? []), issue.message];
+        }
+        setErrors(fieldErrors);
+        return;
+      }
+      try {
+        const result = await updateResident({
+          id: resident.id,
+          body: parsed.data,
+        }).unwrap();
+        toastFromMutation(dispatch, {
+          tone: "success",
+          title: "Data penduduk diperbarui",
+          body: `Perubahan untuk ${result.resident.fullName} (NIK ${formatNik(result.resident.nik)}) tersimpan.`,
+        });
+        onOpenChange(false);
+      } catch (error) {
+        setErrors(errorFields(error));
+      }
+      return;
+    }
 
     const parsed = residentDraftSchema.safeParse({
       ...form,
@@ -116,6 +200,7 @@ export function ResidentFormDialog({
   };
 
   const neighborhoods = areas.data?.neighborhoods ?? [];
+  const activeError = isEdit ? updateState : createState;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -127,21 +212,22 @@ export function ResidentFormDialog({
         <form onSubmit={submit} noValidate>
           <div className="mb-4 flex items-start gap-2.5 pr-6">
             <span className="grid size-8 shrink-0 place-items-center rounded-sm border border-civic/25 bg-civic-soft text-civic">
-              <UserPlus className="size-4" aria-hidden />
+              {isEdit ? <PencilLine className="size-4" aria-hidden /> : <UserPlus className="size-4" aria-hidden />}
             </span>
             <div>
               <h2
                 id="resident-form-title"
                 className="font-display text-sm font-bold tracking-[-0.01em] text-fg"
               >
-                Tambah Penduduk
+                {isEdit ? "Ubah Data Penduduk" : "Tambah Penduduk"}
               </h2>
               <p
                 id="resident-form-desc"
                 className="mt-0.5 text-2xs leading-4 text-fg-subtle"
               >
-                Lengkapi identitas sesuai KTP dan kartu keluarga. NIK yang sudah
-                terdaftar akan ditolak.
+                {isEdit
+                  ? "Perbaiki identitas sesuai dokumen pendukung. NIK tidak dapat diubah; gunakan mutasi bila penduduk pindah atau meninggal."
+                  : "Lengkapi identitas sesuai KTP dan kartu keluarga. NIK yang sudah terdaftar akan ditolak."}
               </p>
             </div>
           </div>
@@ -152,13 +238,14 @@ export function ResidentFormDialog({
               htmlFor="resident-nik"
               required
               error={errors.nik?.[0]}
-              hint="16 digit angka sesuai KTP."
+              hint={isEdit ? "NIK bersifat permanen dan tidak dapat diubah." : "16 digit angka sesuai KTP."}
             >
               <Input
                 id="resident-nik"
-                value={form.nik}
-                inputMode="numeric"
-                maxLength={16}
+                value={isEdit ? formatNik(form.nik) : form.nik}
+                inputMode={isEdit ? undefined : "numeric"}
+                maxLength={isEdit ? undefined : 16}
+                readOnly={isEdit}
                 onChange={(event) =>
                   set("nik", event.target.value.replace(/\D/g, "").slice(0, 16))
                 }
@@ -393,6 +480,30 @@ export function ResidentFormDialog({
                 aria-invalid={Boolean(errors.address)}
               />
             </Field>
+
+            {isEdit ? (
+              <Field
+                label="Status kependudukan"
+                htmlFor="resident-status"
+                required
+                error={errors.status?.[0]}
+                hint={RESIDENT_STATUS[form.status]?.hint}
+                className="sm:col-span-2"
+              >
+                <Select
+                  id="resident-status"
+                  value={form.status}
+                  onChange={(event) => set("status", event.target.value)}
+                  aria-invalid={Boolean(errors.status)}
+                >
+                  {RESIDENT_STATUS_ORDER.map((value) => (
+                    <option key={value} value={value}>
+                      {RESIDENT_STATUS[value].label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : null}
           </div>
 
           <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-sm border border-line bg-surface-muted px-2.5 py-2">
@@ -409,13 +520,13 @@ export function ResidentFormDialog({
             </span>
           </label>
 
-          {errors._form?.length || createState.isError ? (
+          {errors._form?.length || activeError.isError ? (
             <p
               role="alert"
               className="mt-3 flex items-start gap-1.5 rounded-sm border border-rejected-line/60 bg-rejected-bg px-2.5 py-2 text-2xs text-rejected"
             >
               <CircleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
-              {errors._form?.[0] ?? errorMessage(createState.error)}
+              {errors._form?.[0] ?? errorMessage(activeError.error)}
             </p>
           ) : null}
 
@@ -425,22 +536,17 @@ export function ResidentFormDialog({
               variant="ghost"
               size="sm"
               onClick={() => onOpenChange(false)}
-              disabled={createState.isLoading}
+              disabled={pending}
             >
               Batal
             </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              size="sm"
-              disabled={createState.isLoading}
-            >
-              {createState.isLoading ? (
+            <Button type="submit" variant="primary" size="sm" disabled={pending}>
+              {pending ? (
                 <LoaderCircle className="animate-spin" aria-hidden />
               ) : (
                 <Save aria-hidden />
               )}
-              Simpan penduduk
+              {isEdit ? "Simpan perubahan" : "Simpan penduduk"}
             </Button>
           </div>
         </form>

@@ -12,6 +12,40 @@ export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 export const DropdownMenuPortal = DropdownMenuPrimitive.Portal;
 export const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 
+export function DropdownMenuSubTrigger({
+  className,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.SubTrigger>) {
+  return (
+    <DropdownMenuPrimitive.SubTrigger
+      className={cn(
+        "flex cursor-pointer select-none items-center gap-2 rounded-xs px-2 py-1.5 text-xs text-fg outline-none",
+        "transition-colors data-highlighted:bg-surface-muted data-[state=open]:bg-surface-muted",
+        "[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-fg-subtle",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export function DropdownMenuSubContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  return (
+    <DropdownMenuPrimitive.SubContent
+      className={cn(
+        "z-50 min-w-44 overflow-hidden rounded-md border border-line bg-surface p-1 shadow-layer-2",
+        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 export function DropdownMenuContent({
   className,
   sideOffset = 6,
