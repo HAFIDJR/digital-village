@@ -5,5 +5,5 @@ export const metadata = {
 };
 
 export default function LaporanPage() {
-  return <ReportsWorkspace variant="register" />;
+  return <ReportsWorkspace />;
 }

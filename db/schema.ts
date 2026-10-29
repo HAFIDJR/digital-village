@@ -104,6 +104,9 @@ export const activityKindEnum = pgEnum("activity_kind", [
   "KELUAR_LOG",
   "AKTIVASI_TTD",
   "KEAMANAN_AKUN",
+  "PERUBAHAN_DATA",
+  "PENGHAPUSAN_DATA",
+  "PERUBAHAN_WILAYAH",
 ]);
 
 export const sessionActorEnum = pgEnum("session_actor", ["STAFF", "RESIDENT"]);
@@ -627,6 +630,14 @@ export const citizenReports = pgTable(
       onDelete: "set null",
     }),
     responseCount: smallint("response_count").notNull().default(0),
+    /** Denormalised photo count so list queries never join for a badge. */
+    attachmentCount: smallint("attachment_count").notNull().default(0),
+    /** Alasan penolakan tertulis — visible to the reporter in the portal. */
+    rejectionReason: text("rejection_reason"),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    rejectedByStaffId: uuid("rejected_by_staff_id").references(() => staff.id, {
+      onDelete: "set null",
+    }),
     submittedAt: timestamp("submitted_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -647,6 +658,31 @@ export const citizenReports = pgTable(
       t.submittedAt,
     ),
   ],
+);
+
+export const reportAttachments = pgTable(
+  "report_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportId: uuid("report_id")
+      .notNull()
+      .references(() => citizenReports.id, { onDelete: "cascade" }),
+    fileName: varchar("file_name", { length: 200 }).notNull(),
+    storageKey: text("storage_key").notNull(),
+    mimeType: varchar("mime_type", { length: 80 }).notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    width: smallint("width"),
+    height: smallint("height"),
+    caption: varchar("caption", { length: 160 }),
+    uploadedByResidentId: uuid("uploaded_by_resident_id").references(
+      () => residents.id,
+      { onDelete: "set null" },
+    ),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("report_attachments_report_idx").on(t.reportId)],
 );
 
 /* ==========================================================================
@@ -743,6 +779,10 @@ export const notifications = pgTable(
     body: varchar("body", { length: 320 }),
     severity: varchar("severity", { length: 16 }).notNull().default("INFO"), 
     href: text("href"),
+    subjectType: varchar("subject_type", { length: 40 }),
+    subjectId: uuid("subject_id"),
+    subjectRef: varchar("subject_ref", { length: 40 }), // "LPR-1042"
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
     readAt: timestamp("read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -754,6 +794,35 @@ export const notifications = pgTable(
       t.readAt,
       t.createdAt,
     ),
+    index("notifications_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+/**
+ * Per-officer read state for notifications. Broadcasts (`recipient_staff_id`
+ * NULL) are shared by every officer, so "read" cannot live on the row itself —
+ * one officer reading a broadcast must not clear it for the others.
+ */
+export const notificationReads = pgTable(
+  "notification_reads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    villageId: uuid("village_id")
+      .notNull()
+      .references(() => villages.id, { onDelete: "cascade" }),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    staffId: uuid("staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("notification_reads_uq").on(t.notificationId, t.staffId),
+    index("notification_reads_staff_idx").on(t.staffId, t.readAt),
   ],
 );
 
@@ -1004,7 +1073,37 @@ export const activityLogRelations = relations(activityLog, ({ one }) => ({
   }),
 }));
 
-export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
+export const notificationsRelations = relations(notifications, ({ one, many }) => ({
+  village: one(villages, {
+    fields: [notifications.villageId],
+    references: [villages.id],
+  }),
+  recipient: one(staff, {
+    fields: [notifications.recipientStaffId],
+    references: [staff.id],
+  }),
+  reads: many(notificationReads),
+}));
+
+export const notificationReadsRelations = relations(
+  notificationReads,
+  ({ one }) => ({
+    village: one(villages, {
+      fields: [notificationReads.villageId],
+      references: [villages.id],
+    }),
+    notification: one(notifications, {
+      fields: [notificationReads.notificationId],
+      references: [notifications.id],
+    }),
+    staff: one(staff, {
+      fields: [notificationReads.staffId],
+      references: [staff.id],
+    }),
+  }),
+);
+
+export const citizenReportsRelations = relations(citizenReports, ({ one, many }) => ({
   village: one(villages, {
     fields: [citizenReports.villageId],
     references: [villages.id],
@@ -1021,7 +1120,26 @@ export const citizenReportsRelations = relations(citizenReports, ({ one }) => ({
     fields: [citizenReports.handledByStaffId],
     references: [staff.id],
   }),
+  rejectedBy: one(staff, {
+    fields: [citizenReports.rejectedByStaffId],
+    references: [staff.id],
+  }),
+  attachments: many(reportAttachments),
 }));
+
+export const reportAttachmentsRelations = relations(
+  reportAttachments,
+  ({ one }) => ({
+    report: one(citizenReports, {
+      fields: [reportAttachments.reportId],
+      references: [citizenReports.id],
+    }),
+    uploadedBy: one(residents, {
+      fields: [reportAttachments.uploadedByResidentId],
+      references: [residents.id],
+    }),
+  }),
+);
 
 export const residentAnnouncementReadsRelations = relations(
   residentAnnouncementReads,
@@ -1063,10 +1181,12 @@ export type LetterAttachment = typeof letterAttachments.$inferSelect;
 export type SignatureRequest = typeof signatureRequests.$inferSelect;
 export type CitizenReport = typeof citizenReports.$inferSelect;
 export type NewCitizenReport = typeof citizenReports.$inferInsert;
+export type ReportAttachment = typeof reportAttachments.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
 export type NewAnnouncement = typeof announcements.$inferInsert;
 export type ActivityLogEntry = typeof activityLog.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type NotificationRead = typeof notificationReads.$inferSelect;
 export type ResidentAnnouncementRead =
   typeof residentAnnouncementReads.$inferSelect;
 export type DailyStat = typeof dailyStats.$inferSelect;

@@ -1134,7 +1134,10 @@ async function populate(
     }
   }
 
-  await db.insert(t.citizenReports).values(reportValues);
+  const reportRows = await db
+    .insert(t.citizenReports)
+    .values(reportValues)
+    .returning();
 
   /* ----------------------------------------------------------- announcements */
   await db.insert(t.announcements).values(
@@ -1314,7 +1317,7 @@ async function populate(
   await db.insert(t.activityLog).values(activity);
 
   /* ---------------------------------------------------------- notifications */
-  const overdueCount = requestRows.filter(
+  const overdueRequests = requestRows.filter(
     (r) =>
       r.dueAt !== null &&
       r.dueAt < now &&
@@ -1324,7 +1327,11 @@ async function populate(
         "DIVERIFIKASI",
         "MENUNGGU_TTD_KADES",
       ].includes(r.status),
-  ).length;
+  );
+  const overdueCount = overdueRequests.length;
+  const firstPendingSignature = pendingSignatureRequests[0] ?? null;
+  const firstOverdue = overdueRequests[0] ?? null;
+  const firstNewReport = reportRows.find((r) => r.status === "NEW") ?? null;
 
   await db.insert(t.notifications).values([
     {
@@ -1333,7 +1340,13 @@ async function populate(
       title: `${pendingSignatureRequests.length} surat menunggu tanda tangan Kepala Desa`,
       body: "Sekdes telah menyelesaikan verifikasi. Mohon diteruskan ke agenda tanda tangan hari ini.",
       severity: "WARNING",
-      href: "/?status=MENUNGGU_TTD_KADES",
+      href: firstPendingSignature
+        ? `/antrean?request=${firstPendingSignature.id}`
+        : "/antrean",
+      subjectType: firstPendingSignature ? "letter_request" : null,
+      subjectId: firstPendingSignature?.id ?? null,
+      subjectRef: firstPendingSignature?.ticket ?? null,
+      meta: { pending: pendingSignatureRequests.length },
       createdAt: new Date(now.getTime() - 22 * 60_000),
     },
     {
@@ -1342,7 +1355,11 @@ async function populate(
       title: `${overdueCount} pengajuan melewati batas SLA`,
       body: "Pengajuan yang melewati jatuh tempo perlu ditindaklanjuti sebelum akhir hari kerja.",
       severity: "CRITICAL",
-      href: "/?sla=overdue",
+      href: firstOverdue ? `/antrean?request=${firstOverdue.id}` : "/antrean",
+      subjectType: firstOverdue ? "letter_request" : null,
+      subjectId: firstOverdue?.id ?? null,
+      subjectRef: firstOverdue?.ticket ?? null,
+      meta: { overdue: overdueCount },
       createdAt: new Date(now.getTime() - 47 * 60_000),
     },
     {
@@ -1351,7 +1368,11 @@ async function populate(
       title: "3 laporan warga baru masuk dari kanal website",
       body: "Kategori infrastruktur dan air bersih memerlukan penugasan petugas.",
       severity: "INFO",
-      href: "/laporan",
+      href: firstNewReport ? `/laporan?report=${firstNewReport.id}` : "/laporan",
+      subjectType: firstNewReport ? "citizen_report" : null,
+      subjectId: firstNewReport?.id ?? null,
+      subjectRef: firstNewReport?.ticket ?? null,
+      meta: { newReports: 3 },
       createdAt: new Date(now.getTime() - 96 * 60_000),
     },
     {
@@ -1361,6 +1382,10 @@ async function populate(
       body: "Sertifikat BSrE berlaku sampai 12 Agustus 2027. Tidak ada tindakan yang diperlukan.",
       severity: "SUCCESS",
       href: null,
+      subjectType: "staff",
+      subjectId: kades.id,
+      subjectRef: null,
+      meta: { expiresAt: "2027-08-12" },
       readAt: new Date(now.getTime() - 3 * 3600_000),
       createdAt: new Date(now.getTime() - 5 * 3600_000),
     },
@@ -1371,6 +1396,10 @@ async function populate(
       body: "1.412 Kartu Keluarga dan 4.821 jiwa tersinkron pada pukul 05.00 WIB.",
       severity: "SUCCESS",
       href: null,
+      subjectType: null,
+      subjectId: null,
+      subjectRef: null,
+      meta: { families: 1412, residents: 4821 },
       readAt: new Date(now.getTime() - 6 * 3600_000),
       createdAt: asInstant(new Date(startOfToday.getTime() + 5 * 3600_000)),
     },
@@ -1381,6 +1410,10 @@ async function populate(
       body: "32 surat selesai bulan lalu belum ditandai tercetak pada arsip fisik.",
       severity: "INFO",
       href: "/arsip",
+      subjectType: null,
+      subjectId: null,
+      subjectRef: null,
+      meta: { unprinted: 32 },
       readAt: new Date(now.getTime() - 20 * 3600_000),
       createdAt: new Date(now.getTime() - 30 * 3600_000),
     },

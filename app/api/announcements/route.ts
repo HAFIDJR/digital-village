@@ -14,7 +14,7 @@ export async function GET() {
     const village = await getVillageProfile();
     if (!village)
       throw new DomainError("Profil desa belum tersedia.", "NOT_SEEDED", 503);
-    return { announcements: await getAnnouncements(village.id, 8) };
+     return { announcements: await getAnnouncements(village.id, 50) };
   });
 }
 

@@ -1,9 +1,9 @@
-import { ReportsWorkspace } from "@/components/dashboard/reports/reports-workspace";
+import { OverviewWorkspace } from "@/components/dashboard/overview-workspace";
 
 export const metadata = {
-  title: "Laporan Warga · Dashboard Desa Sukamaju",
+  title: "Dashboard · Desa Sukamaju",
 };
 
 export default function Page() {
-  return <ReportsWorkspace variant="landing" />;
+  return <OverviewWorkspace />;
 }

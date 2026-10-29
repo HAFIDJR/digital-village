@@ -74,9 +74,7 @@ function buildGroups(
           label: "Dasbor",
           href: "/",
           icon: LayoutDashboard,
-          description: "Ringkasan dan daftar laporan warga",
-          count: counts.reportsNew,
-          tone: counts.reportsNew > 0 ? "pending" : "neutral",
+          description: "Ringkasan operasional pelayanan desa",
         },
         {
           id: "antrean",

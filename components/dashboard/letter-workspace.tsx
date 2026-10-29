@@ -10,7 +10,8 @@ import { ROLE_CAPABILITIES } from "@/lib/domain";
 import { formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { errorMessage, useGetWorkspaceQuery } from "@/store/api";
-import { useAppSelector } from "@/store";
+import { useAppDispatch, useAppSelector } from "@/store";
+import { queueActions } from "@/store/queue-slice";
 import type { QueueQuery } from "@/lib/validators";
 import type { StaffRole } from "@/db/schema";
 
@@ -22,8 +23,22 @@ import { PageHeader } from "./page-kit";
 import { QueuePanel, queueResultLabel } from "./queue/queue-panel";
 
 export function LetterWorkspace() {
+  const dispatch = useAppDispatch();
   const queue = useAppSelector((state) => state.queue);
   const searchRef = React.useRef<HTMLInputElement>(null);
+
+  // Consume the notification deep link `/antrean?request=<id>` once on mount:
+  // the id doubles as the search term (the queue filter matches request ids)
+  // and the review drawer opens on the selected row. Reading `window.location`
+  // keeps the page free of a Suspense boundary requirement.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requestId = params.get("request");
+    if (!requestId) return;
+    dispatch(queueActions.searchChanged(requestId));
+    dispatch(queueActions.requestSelected(requestId));
+    window.history.replaceState(null, "", window.location.pathname);
+  }, [dispatch]);
 
   const queryArgs = React.useMemo<Partial<QueueQuery>>(
     () => ({
