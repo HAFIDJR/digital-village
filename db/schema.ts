@@ -55,6 +55,7 @@ export const requestStatusEnum = pgEnum("request_status", [
 ]);
 
 export const attachmentStatusEnum = pgEnum("attachment_status", [
+  "MENUNGGU_VERIFIKASI",
   "LENGKAP",
   "BURAM",
   "TIDAK_ADA",
@@ -547,6 +548,7 @@ export const letterAttachments = pgTable(
       .notNull()
       .references(() => letterRequests.id, { onDelete: "cascade" }),
     docKey: varchar("doc_key", { length: 40 }).notNull(),
+    revision: integer("revision").notNull().default(1),
     label: varchar("label", { length: 120 }).notNull(),
     fileName: varchar("file_name", { length: 200 }).notNull(),
     /** Object-store key. Never a public URL — files are streamed through the API. */
@@ -563,7 +565,10 @@ export const letterAttachments = pgTable(
       onDelete: "set null",
     }),
   },
-  (t) => [index("letter_attachments_request_idx").on(t.requestId)],
+  (t) => [
+    index("letter_attachments_request_idx").on(t.requestId),
+    uniqueIndex("letter_attachments_revision_uq").on(t.requestId, t.docKey, t.revision),
+  ],
 );
 
 /** Electronic signature ceremony for documents authored by the Kepala Desa. */

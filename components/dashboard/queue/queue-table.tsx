@@ -210,23 +210,7 @@ const QueueTableRow = React.memo(function QueueTableRow({
     }
   };
 
-  const reject = async () => {
-    await verify({
-      id: row.id,
-      body: {
-        action: "minta_perbaikan",
-        note:
-          row.complianceNote ??
-          "Berkas belum memenuhi syarat, mohon dilengkapi.",
-        expedite: false,
-      },
-    }).unwrap();
-    toastFromMutation(dispatch, {
-      tone: "warning",
-      title: `${row.ticket} dikembalikan untuk perbaikan`,
-      body: "Pemohon menerima notifikasi untuk mengunggah ulang berkas.",
-    });
-  };
+
 
   return (
     <tr
@@ -477,7 +461,7 @@ const QueueTableRow = React.memo(function QueueTableRow({
                     <Check aria-hidden />
                     Setujui berkas
                   </DropdownMenuItem>
-                  <DropdownMenuItem tone="danger" onSelect={reject}>
+                  <DropdownMenuItem tone="danger" onSelect={openDrawer}>
                     <X aria-hidden />
                     Minta perbaikan berkas
                   </DropdownMenuItem>

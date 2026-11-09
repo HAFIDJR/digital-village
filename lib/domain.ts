@@ -123,6 +123,7 @@ export const ATTACHMENT_STATUS: Record<
   LetterAttachmentStatus,
   { label: string; tone: Tone; hint: string }
 > = {
+  MENUNGGU_VERIFIKASI: { label: "Menunggu verifikasi", tone: "pending", hint: "Berkas baru belum dinilai petugas." },
   LENGKAP: {
     label: "Lengkap",
     tone: "approved",

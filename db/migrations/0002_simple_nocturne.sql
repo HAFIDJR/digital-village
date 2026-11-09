@@ -1,0 +1,1 @@
+ALTER TYPE "public"."attachment_status" ADD VALUE 'MENUNGGU_VERIFIKASI' BEFORE 'LENGKAP';
