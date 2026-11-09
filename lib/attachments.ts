@@ -50,7 +50,12 @@ export async function saveUpload(input: {
 
   const absolute = resolveKey(storageKey);
   await fs.mkdir(path.dirname(absolute), { recursive: true });
-  await fs.writeFile(absolute, input.data);
+  try {
+    await fs.writeFile(absolute, input.data);
+  } catch (error) {
+    try { await fs.unlink(absolute); } catch (cleanupError) { console.error("[upload] cleanup failed", storageKey, cleanupError); }
+    throw error;
+  }
 
   return { storageKey, sizeBytes: input.data.byteLength };
 }
@@ -86,8 +91,8 @@ export async function deleteAttachments(storageKeys: string[]): Promise<void> {
     storageKeys.map(async (key) => {
       try {
         await fs.unlink(resolveKey(key));
-      } catch {
-        // Already gone, or never written — nothing to clean up.
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("[upload] cleanup failed", key, error);
       }
     }),
   );

@@ -13,7 +13,8 @@ import type { RequestStatus } from "@/db/schema";
 import type { QueuePage } from "@/db/queries";
 
 import { useNow } from "../now-context";
-import { QueueAlertStrip, QueueTable } from "./queue-table";
+import { QueueAlertStrip } from "./queue-table";
+import { BulkAssignment } from "./bulk-assignment";
 import { QueuePagination, QueueToolbar } from "./queue-toolbar";
 
 export function useQueuePreset(preset: RequestStatus[]) {
@@ -57,7 +58,9 @@ export function QueuePanel({
   action?: React.ReactNode;
 }) {
   const now = useNow();
-  const focusedIndex = useAppSelector((state) => state.queue.focusedIndex);
+  const queueState = useAppSelector((state) => state.queue);
+  const focusedIndex = queueState.focusedIndex;
+  const selectionKey = JSON.stringify([queueState.page, queueState.pageSize, queueState.search, queueState.statuses, queueState.letterTypes, queueState.dusun, queueState.sla, queueState.sort]);
   const unprocessedTotal =
     (queue?.statusCounts.PENDING_VERIFIKASI ?? 0) + (queue?.statusCounts.BERKAS_TIDAK_LENGKAP ?? 0);
 
@@ -99,7 +102,8 @@ export function QueuePanel({
 
       <QueueToolbar data={queue} resultLabel={resultLabel} searchInputRef={searchInputRef} />
 
-      <QueueTable
+      <BulkAssignment
+        key={selectionKey}
         rows={queue?.rows ?? []}
         loading={loading}
         now={now}

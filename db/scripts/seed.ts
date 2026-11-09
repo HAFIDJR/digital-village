@@ -16,7 +16,6 @@ async function main() {
     if (result.skipped) {
       console.log(`[seed] skipped — ${result.reason}. Use --reset to rebuild.`);
       console.log(`[seed] Desa Sukamaju populated in ${result.durationMs}ms`);
-      console.table(result.counts);
       return;
     }
   } catch (error) {

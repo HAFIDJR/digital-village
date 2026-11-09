@@ -31,6 +31,7 @@ import {
   REQUEST_STATUS,
   isReportEditable,
   notificationSeverity,
+  ROLE_CAPABILITIES,
 } from "@/lib/domain";
 import { MAX_REPORT_IMAGES } from "@/lib/validators";
 import { initialsOf } from "@/lib/format";
@@ -309,7 +310,10 @@ export async function verifyLetterRequest(input: {
 
   return db.transaction(async (tx) => {
     const staff = await loadStaff(tx, input.staffId);
-    const request = await loadRequest(tx, input.villageId, input.requestId);
+    const [request] = await tx.select().from(t.letterRequests).where(and(
+      eq(t.letterRequests.id, input.requestId), eq(t.letterRequests.villageId, input.villageId),
+    )).for("update");
+    if (!request) throw new DomainError("Pengajuan tidak ditemukan", "REQUEST_NOT_FOUND", 404);
     const currentStatus = request.status as RequestStatus;
 
     const [letterType] = await tx
@@ -332,6 +336,7 @@ export async function verifyLetterRequest(input: {
             and(
               eq(t.letterAttachments.id, verdict.attachmentId),
               eq(t.letterAttachments.requestId, request.id),
+              sql`${t.letterAttachments.revision} = (select max(a.revision) from letter_attachments a where a.request_id = ${request.id} and a.doc_key = ${t.letterAttachments.docKey})`,
             ),
           )
           .returning({ id: t.letterAttachments.id });
@@ -347,17 +352,20 @@ export async function verifyLetterRequest(input: {
     const attachments = await tx
       .select()
       .from(t.letterAttachments)
-      .where(eq(t.letterAttachments.requestId, request.id));
+      .where(and(eq(t.letterAttachments.requestId, request.id),
+        sql`${t.letterAttachments.revision} = (select max(a.revision) from letter_attachments a where a.request_id = ${request.id} and a.doc_key = ${t.letterAttachments.docKey})`));
 
-    const defective = attachments.filter((a) => a.status === "BURAM" || a.status === "TIDAK_ADA");
+    const defective = attachments.filter((a) => a.status !== "LENGKAP");
+    const requirements = await tx.select().from(t.letterRequirements).where(eq(t.letterRequirements.letterTypeId, request.letterTypeId));
+    const missingMandatory = requirements.filter((req) => req.mandatory && !attachments.some((a) => a.docKey === req.docKey));
 
     // --- 2. Determine the next state --------------------------------------
     let nextStatus: RequestStatus;
     switch (input.payload.action) {
       case "setujui":
-        if (defective.length > 0) {
+        if (defective.length > 0 || missingMandatory.length > 0) {
           throw new DomainError(
-            `${defective.length} berkas masih bermasalah. Perbaiki status berkas sebelum menyetujui.`,
+            `${defective.length} berkas bermasalah dan ${missingMandatory.length} berkas wajib belum ada.`,
             "ATTACHMENTS_DEFECTIVE",
             409,
           );
@@ -365,6 +373,9 @@ export async function verifyLetterRequest(input: {
         nextStatus = approvalTarget(currentStatus, letterType?.requiresKadesSignature !== false);
         break;
       case "minta_perbaikan":
+        if (!defective.some((a) => a.status !== "MENUNGGU_VERIFIKASI") && !missingMandatory.length) {
+          throw new DomainError("Tandai berkas yang perlu diperbaiki sebelum mengembalikan pengajuan.", "NO_CORRECTIONS", 409);
+        }
         nextStatus = "BERKAS_TIDAK_LENGKAP";
         break;
       case "tolak":
@@ -392,7 +403,7 @@ export async function verifyLetterRequest(input: {
         assignedStaffId: staff.id,
         complianceNote:
           nextStatus === "BERKAS_TIDAK_LENGKAP"
-            ? (firstDefect?.defectNote ?? note ?? "Berkas perlu diperbaiki")
+            ? (firstDefect?.defectNote ?? note ?? "Berkas perlu diperbaiki").slice(0, 120)
             : null,
         rejectionReason: nextStatus === "DITOLAK" ? (note ?? "Tidak memenuhi persyaratan") : null,
         priority: input.payload.expedite ? "PRIORITAS" : request.priority,
@@ -3114,5 +3125,115 @@ export async function deleteNeighborhood(input: {
     });
 
     return { id: row.id, rt: row.rt, rw: row.rw, hamletId: hamlet.id };
+  });
+}
+/** Compare against the queue snapshot in the UPDATE itself, not a prior read. */
+export async function bulkAssignRequests(input: {
+  villageId: string; actorId: string; staffId: string;
+  requests: { id: string; status: RequestStatus; assignedStaffId: string | null; updatedAt: string }[];
+}) {
+  const db = await getDb();
+  return db.transaction(async (tx) => {
+    const actor = await loadStaff(tx, input.actorId);
+    if (actor.villageId !== input.villageId || !ROLE_CAPABILITIES[actor.role]?.verify)
+      throw new DomainError("Tidak berwenang.", "FORBIDDEN_CAPABILITY", 403);
+    const [target] = await tx.select().from(t.staff).where(and(
+      eq(t.staff.id, input.staffId), eq(t.staff.villageId, input.villageId),
+      eq(t.staff.active, true),
+    )).for("update");
+    if (!target || !ROLE_CAPABILITIES[target.role]?.verify)
+      throw new DomainError("Petugas tidak aktif atau tidak berwenang melakukan verifikasi.", "INVALID_STAFF", 422);
+
+    const results: { id: string; outcome: "updated" | "unchanged" | "failed"; reason?: string }[] = [];
+    // Stable lock order reduces deadlocks between overlapping batches.
+    for (const item of [...input.requests].sort((a, b) => a.id.localeCompare(b.id))) {
+      if (!["PENDING_VERIFIKASI", "BERKAS_TIDAK_LENGKAP", "DIVERIFIKASI"].includes(item.status)) {
+        results.push({ id: item.id, outcome: "failed", reason: "Status tidak dapat ditugaskan." });
+        continue;
+      }
+      const condition = and(
+        eq(t.letterRequests.id, item.id), eq(t.letterRequests.villageId, input.villageId),
+        eq(t.letterRequests.status, item.status),
+        sql`${t.letterRequests.updatedAt} = ${item.updatedAt}::timestamptz`,
+        item.assignedStaffId === null ? isNull(t.letterRequests.assignedStaffId) : eq(t.letterRequests.assignedStaffId, item.assignedStaffId),
+      );
+      const [updated] = item.assignedStaffId === target.id
+        ? await tx.select({ ticket: t.letterRequests.ticket }).from(t.letterRequests).where(condition).for("update")
+        : await tx.update(t.letterRequests).set({ assignedStaffId: target.id, updatedAt: new Date() })
+          .where(condition).returning({ ticket: t.letterRequests.ticket });
+      if (!updated) {
+        results.push({ id: item.id, outcome: "failed", reason: "Pengajuan tidak ditemukan atau status/penugasannya telah berubah." });
+      } else if (item.assignedStaffId === target.id) {
+        results.push({ id: item.id, outcome: "unchanged", reason: "Sudah ditugaskan kepada petugas ini." });
+      } else {
+        await writeAudit(tx, input.villageId, {
+          kind: "PERUBAHAN_DATA", summary: `${updated.ticket} ditugaskan kepada ${target.fullName}.`,
+          subjectType: "letter_request", subjectId: item.id, subjectRef: updated.ticket,
+          actor: { id: actor.id, name: actor.fullName, initials: actor.initials, role: actor.jobTitle },
+          meta: { previousStaffId: item.assignedStaffId, assignedStaffId: target.id },
+        });
+        results.push({ id: item.id, outcome: "updated" });
+      }
+    }
+    return results;
+  });
+}
+
+/** Files have already been stored. All checks are repeated under the request lock. */
+export async function resubmitLetterRequest(input: {
+  villageId: string; residentId: string; requestId: string; version: string;
+  attachments: StoredLetterAttachment[];
+}) {
+  const db = await getDb();
+  return db.transaction(async (tx) => {
+    const [request] = await tx.select().from(t.letterRequests).where(and(
+      eq(t.letterRequests.id, input.requestId), eq(t.letterRequests.villageId, input.villageId),
+      eq(t.letterRequests.applicantResidentId, input.residentId),
+    )).for("update");
+    if (!request) throw new DomainError("Pengajuan tidak ditemukan.", "REQUEST_NOT_FOUND", 404);
+    if (request.status !== "BERKAS_TIDAK_LENGKAP" || request.updatedAt.toISOString() !== input.version)
+      throw new DomainError("Pengajuan telah berubah. Segarkan halaman dan periksa kembali berkas.", "STALE_REQUEST", 409);
+    const resident = await loadResident(tx, input.villageId, input.residentId);
+    const requirements = await tx.select().from(t.letterRequirements).where(eq(t.letterRequirements.letterTypeId, request.letterTypeId));
+    const attachments = await tx.select().from(t.letterAttachments).where(eq(t.letterAttachments.requestId, request.id));
+    const latest = new Map<string, typeof attachments[number]>();
+    for (const a of attachments) if (!latest.has(a.docKey) || latest.get(a.docKey)!.revision < a.revision) latest.set(a.docKey, a);
+    const required = requirements.filter((req) => {
+      const a = latest.get(req.docKey);
+      return (!a && req.mandatory) || (a && ["BURAM", "TIDAK_ADA", "TIDAK_RELEVAN"].includes(a.status));
+    });
+    const byKey = new Map(required.map((req) => [req.docKey, req]));
+    const seen = new Set<string>();
+    for (const file of input.attachments) {
+      if (!byKey.has(file.docKey) || seen.has(file.docKey))
+        throw new DomainError("Berkas tidak diperlukan atau dikirim lebih dari satu kali.", "INVALID_ATTACHMENT", 422);
+      seen.add(file.docKey);
+    }
+    if (!required.length || seen.size !== required.length)
+      throw new DomainError("Lengkapi semua berkas yang diminta sebelum mengirim kembali.", "ATTACHMENTS_REQUIRED", 422);
+    for (const file of input.attachments) {
+      await tx.insert(t.letterAttachments).values({
+        requestId: request.id, docKey: file.docKey, revision: (latest.get(file.docKey)?.revision ?? 0) + 1,
+        label: byKey.get(file.docKey)!.label, fileName: file.fileName, storageKey: file.storageKey,
+        mimeType: file.mimeType, sizeBytes: file.sizeBytes, status: "MENUNGGU_VERIFIKASI", verifiedByStaffId: null,
+      });
+    }
+    if (!canTransition(request.status, "PENDING_VERIFIKASI"))
+      throw new DomainError("Status tidak dapat diubah.", "INVALID_TRANSITION", 409);
+    await tx.update(t.letterRequests).set({
+      status: "PENDING_VERIFIKASI", complianceNote: null, verifiedAt: null, updatedAt: new Date(),
+      documentsUploaded: new Set([...latest.keys(), ...seen]).size,
+    }).where(eq(t.letterRequests.id, request.id));
+    await writeAudit(tx, input.villageId, {
+      kind: "PERUBAHAN_DATA", summary: `${resident.fullName} mengirim kembali berkas ${request.ticket} untuk verifikasi.`,
+      subjectType: "letter_request", subjectId: request.id, subjectRef: request.ticket,
+      actor: { id: null, name: resident.fullName, initials: initialsOf(resident.fullName) || "W", role: "Warga (Portal)" },
+      meta: { from: request.status, to: "PENDING_VERIFIKASI", documents: [...seen] },
+    });
+    await notifyOfficers(tx, input.villageId, {
+      title: `${request.ticket} menunggu verifikasi ulang`, body: `${resident.fullName} mengirim berkas perbaikan.`,
+      severity: "INFO", href: `/antrean?request=${request.id}`, subjectType: "letter_request", subjectId: request.id, subjectRef: request.ticket,
+    });
+    return { ticket: request.ticket, status: "PENDING_VERIFIKASI" as const };
   });
 }

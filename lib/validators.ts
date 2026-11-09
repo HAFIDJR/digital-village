@@ -902,3 +902,15 @@ export function toFieldErrors(error: z.ZodError): Record<string, string[]> {
   }
   return output;
 }
+export const bulkAssignmentSchema = z.object({
+  staffId: uuidSchema,
+  requests: z.array(z.object({
+    id: uuidSchema,
+    status: requestStatusSchema,
+    assignedStaffId: uuidSchema.nullable(),
+    updatedAt: z.iso.datetime(),
+  })).min(1).max(100).refine(
+    (rows) => new Set(rows.map((row) => row.id)).size === rows.length,
+    "Pengajuan tidak boleh dipilih dua kali",
+  ),
+});

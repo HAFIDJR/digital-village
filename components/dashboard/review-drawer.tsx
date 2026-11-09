@@ -169,14 +169,14 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
     detail.status === "SELESAI";
 
   const attachmentPayload = () =>
-    Object.entries(verdicts).map(([attachmentId, status]) => ({
+    Object.entries(verdicts).filter((entry): entry is [string, Exclude<LetterAttachmentStatus, "MENUNGGU_VERIFIKASI">] => entry[1] !== "MENUNGGU_VERIFIKASI").map(([attachmentId, status]) => ({
       attachmentId,
       status,
       defectNote:
         status === "LENGKAP"
           ? undefined
-          : (detail.attachments.find((a) => a.id === attachmentId)
-              ?.defectNote ??
+          : (rejectNote.trim().slice(0, 160) || detail.attachments.find((a) => a.id === attachmentId)
+              ?.defectNote ||
             "Perlu diunggah ulang dengan kualitas lebih baik"),
     }));
 
@@ -481,8 +481,9 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate text-xs font-medium text-fg">
-                        {current.label}
+                        {current.label} · Versi {current.revision}
                       </p>
+                      {current.status === "MENUNGGU_VERIFIKASI" && <p className="text-2xs text-pending">Menunggu penilaian petugas</p>}
                       <p
                         className="truncate font-mono text-2xs text-fg-subtle"
                         title={current.fileName}
@@ -591,6 +592,13 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
             </div>
           )}
 
+          {detail.attachmentHistory.length > 0 && <div className="mt-3 rounded-sm border border-line p-2 text-2xs">
+            <p className="font-semibold">Riwayat versi sebelumnya (hanya baca)</p>
+            <ul className="mt-1 space-y-1">{detail.attachmentHistory.map((a) => <li key={a.id}>
+              {a.label} · versi {a.revision} · {a.status} · {a.fileName} {a.defectNote && `· Catatan: ${a.defectNote}`} {a.verifiedByName && `· ${a.verifiedByName}`}
+              {a.stored && <> · <a className="underline" target="_blank" rel="noreferrer" href={`/api/requests/${detail.id}/attachments/${a.id}`}>Lihat berkas lama</a></>}
+            </li>)}</ul>
+          </div>}
           {detail.missingRequirements.length > 0 ? (
             <div className="mt-3 rounded-sm border border-rejected-line/50 bg-rejected-bg/70 p-2.5">
               <p className="flex items-center gap-1.5 text-2xs font-semibold text-rejected">
@@ -868,7 +876,7 @@ function DrawerContent({ detail }: { detail: RequestDetail }) {
               maxLength={500}
             />
             <p className="text-2xs text-fg-subtle">
-              Alasan ini dikirim ke pemohon melalui notifikasi dan tercatat
+              Tandai berkas bermasalah di atas; alasan ini juga ditampilkan kepada pemohon dan tercatat
               permanen pada jejak audit desa.
             </p>
           </div>

@@ -8,6 +8,20 @@
       "when": 1793179061423,
       "tag": "0000_busy_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794199744883,
+      "tag": "0001_fuzzy_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794199895166,
+      "tag": "0002_simple_nocturne",
+      "breakpoints": true
     }
   ]
 }

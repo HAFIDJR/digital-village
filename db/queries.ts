@@ -1,6 +1,7 @@
 import "server-only";
 
-import { sql, type SQL } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import * as t from "./schema";
 
 import { getDb } from "./client";
 import { getSessionId } from "@/lib/auth/session";
@@ -84,6 +85,8 @@ export type QueueRow = {
   ageMinutes: number;
   slaMinutes: number | null;
   assignedTo: string | null;
+  assignedStaffId: string | null;
+  updatedAt: string;
   assignedInitials: string | null;
 };
 
@@ -102,6 +105,7 @@ export type QueuePage = {
 export type AttachmentView = {
   id: string;
   docKey: string;
+  revision: number;
   label: string;
   fileName: string;
   mimeType: string;
@@ -173,6 +177,7 @@ export type RequestDetail = {
     headName: string | null;
   };
   attachments: AttachmentView[];
+  attachmentHistory: AttachmentView[];
   missingRequirements: { docKey: string; label: string; mandatory: boolean }[];
   signature: {
     id: string;
@@ -599,6 +604,8 @@ export async function listLetterRequests(
                floor(extract(epoch from (now() - lr.submitted_at)) / 60)::int as "ageMinutes",
                case when lr.due_at is null then null
                     else floor(extract(epoch from (lr.due_at - now())) / 60)::int end as "slaMinutes",
+               lr.assigned_staff_id                       as "assignedStaffId",
+               to_char(lr.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "updatedAt",
                st.full_name                               as "assignedTo",
                st.initials                                as "assignedInitials"
         from letter_requests lr
@@ -817,6 +824,7 @@ export async function getRequestDetail(
       db.execute<AttachmentView>(sql`
       select a.id,
              a.doc_key      as "docKey",
+             a.revision,
              a.label,
              a.file_name    as "fileName",
              a.mime_type    as "mimeType",
@@ -890,7 +898,11 @@ export async function getRequestDetail(
     `),
     ]);
 
-  const uploadedKeys = new Set(attachmentResult.rows.map((a) => a.docKey));
+  const latestRevisions = new Map<string, number>();
+  for (const a of attachmentResult.rows) latestRevisions.set(a.docKey, Math.max(latestRevisions.get(a.docKey) ?? 0, a.revision));
+  const currentAttachments = attachmentResult.rows.filter((a) => a.revision === latestRevisions.get(a.docKey));
+  const attachmentHistory = attachmentResult.rows.filter((a) => a.revision !== latestRevisions.get(a.docKey));
+  const uploadedKeys = new Set(currentAttachments.map((a) => a.docKey));
   const missingRequirements = requirementResult.rows
     .filter((req) => !uploadedKeys.has(req.docKey))
     .map((req) => ({
@@ -960,7 +972,8 @@ export async function getRequestDetail(
       rw: row.rw,
       headName: row.rtHead,
     },
-    attachments: attachmentResult.rows,
+    attachments: currentAttachments,
+    attachmentHistory,
     missingRequirements,
     signature: signatureRow
       ? {
@@ -3105,5 +3118,30 @@ export async function getFamilyReport(villageId: string): Promise<FamilyReport> 
     sizeBreakdown: sizeResult.rows,
     dusunBreakdown: dusunResult.rows,
     largestFamilies: largestResult.rows,
+  };
+}
+/** Resident-only correction manifest; never returns storage keys or unrelated requests. */
+export async function getResidentCorrection(villageId: string, residentId: string, requestId: string) {
+  const db = await getDb();
+  const [request] = await db.select().from(t.letterRequests).where(and(
+    eq(t.letterRequests.id, requestId), eq(t.letterRequests.villageId, villageId),
+    eq(t.letterRequests.applicantResidentId, residentId),
+  ));
+  if (!request) return null;
+  const requirements = await db.select().from(t.letterRequirements)
+    .where(eq(t.letterRequirements.letterTypeId, request.letterTypeId));
+  const attachments = await db.select().from(t.letterAttachments)
+    .where(eq(t.letterAttachments.requestId, requestId));
+  const latest = new Map<string, typeof attachments[number]>();
+  for (const a of attachments) if (!latest.has(a.docKey) || latest.get(a.docKey)!.revision < a.revision) latest.set(a.docKey, a);
+  return {
+    status: request.status, version: request.updatedAt.toISOString(), note: request.complianceNote,
+    documents: requirements.flatMap((req) => {
+      const a = latest.get(req.docKey);
+      if ((!a && req.mandatory) || (a && ["BURAM", "TIDAK_ADA", "TIDAK_RELEVAN"].includes(a.status))) {
+        return [{ docKey: req.docKey, label: req.label, note: a?.defectNote ?? null, missing: !a || a.status === "TIDAK_ADA" }];
+      }
+      return [];
+    }),
   };
 }
