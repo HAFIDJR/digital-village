@@ -20,15 +20,12 @@ import {
 } from "@/store/api";
 
 import { RequestComposer } from "./request-composer";
+import { RequestCorrection } from "./request-correction";
 
-/**
- * "Pengajuan Surat" — the resident's own queue. Reads go through RTK Query, so
- * a status change made by an officer shows up on focus/reconnect and right
- * after the resident files a new letter.
- */
 export function RequestPanel() {
   const requests = useListResidentRequestsQuery();
   const [composing, setComposing] = React.useState(false);
+  const [submitted, setSubmitted] = React.useState("");
 
   const rows = requests.data?.requests ?? [];
   const downloadable = rows.filter((row) => row.downloadable).length;
@@ -76,6 +73,8 @@ export function RequestPanel() {
           <RequestComposer />
         </div>
       ) : null}
+
+      {submitted && <p role="status" className="px-4 py-2 text-xs text-approved">{submitted} telah dikirim dan menunggu verifikasi ulang petugas.</p>}
 
       {requests.isError ? (
         <p role="alert" className="px-4 py-4 text-2xs text-rejected">
@@ -173,6 +172,7 @@ export function RequestPanel() {
                     </span>
                   </div>
                 </div>
+                {request.status === "BERKAS_TIDAK_LENGKAP" && <RequestCorrection id={request.id} onSubmitted={(ticket) => { setSubmitted(ticket); requests.refetch(); }} />}
               </li>
             );
           })}

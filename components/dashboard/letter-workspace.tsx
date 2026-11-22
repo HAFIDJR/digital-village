@@ -5,7 +5,11 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Kbd, Panel, PanelHeader } from "@/components/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ROLE_CAPABILITIES } from "@/lib/domain";
 import { formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -21,16 +25,13 @@ import { QueryErrorState } from "./feedback";
 import { KpiRow } from "./kpi-row";
 import { PageHeader } from "./page-kit";
 import { QueuePanel, queueResultLabel } from "./queue/queue-panel";
+import { useDebounce } from "@/components/ui/use-debounce";
 
 export function LetterWorkspace() {
   const dispatch = useAppDispatch();
   const queue = useAppSelector((state) => state.queue);
   const searchRef = React.useRef<HTMLInputElement>(null);
 
-  // Consume the notification deep link `/antrean?request=<id>` once on mount:
-  // the id doubles as the search term (the queue filter matches request ids)
-  // and the review drawer opens on the selected row. Reading `window.location`
-  // keeps the page free of a Suspense boundary requirement.
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestId = params.get("request");
@@ -40,9 +41,11 @@ export function LetterWorkspace() {
     window.history.replaceState(null, "", window.location.pathname);
   }, [dispatch]);
 
+  const debouncedSearch = useDebounce(queue.search, 350);
+
   const queryArgs = React.useMemo<Partial<QueueQuery>>(
     () => ({
-      q: queue.search,
+      q: debouncedSearch,
       status: queue.statuses,
       letterType: queue.letterTypes,
       dusun: queue.dusun,
@@ -52,7 +55,7 @@ export function LetterWorkspace() {
       pageSize: queue.pageSize,
     }),
     [
-      queue.search,
+      debouncedSearch,
       queue.statuses,
       queue.letterTypes,
       queue.dusun,
@@ -63,8 +66,15 @@ export function LetterWorkspace() {
     ],
   );
 
-  const { data, isLoading, isFetching, isError, error, refetch, fulfilledTimeStamp } =
-    useGetWorkspaceQuery(queryArgs);
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
+    fulfilledTimeStamp,
+  } = useGetWorkspaceQuery(queryArgs);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -73,7 +83,13 @@ export function LetterWorkspace() {
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target?.isContentEditable;
-      if (event.key === "f" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (
+        event.key === "f" &&
+        !typing &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
         event.preventDefault();
         searchRef.current?.focus();
       }
@@ -111,7 +127,10 @@ export function LetterWorkspace() {
   return (
     <>
       <div className="relative overflow-hidden rounded-lg border border-ink bg-ink text-white">
-        <div aria-hidden className="absolute inset-y-0 left-0 w-0.75 bg-civic" />
+        <div
+          aria-hidden
+          className="absolute inset-y-0 left-0 w-0.75 bg-civic"
+        />
         <div className="relative flex flex-wrap items-start justify-between gap-x-4 gap-y-3 px-4 py-3.5">
           <div className="min-w-0">
             <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/55">
@@ -121,8 +140,9 @@ export function LetterWorkspace() {
               Antrean Pengajuan Surat Warga
             </h1>
             <p className="mt-1 max-w-2xl text-2xs leading-4 text-white/70">
-              Pusat kendali pelayanan administrasi: verifikasi berkas, agenda tanda tangan Kepala
-              Desa, dan pencetakan surat warga Desa Sukamaju.
+              Pusat kendali pelayanan administrasi: verifikasi berkas, agenda
+              tanda tangan Kepala Desa, dan pencetakan surat warga Desa
+              Sukamaju.
             </p>
 
             {data ? (
@@ -145,7 +165,9 @@ export function LetterWorkspace() {
                 <HeroStat
                   label="Rata-rata layanan"
                   value={
-                    data.kpi.avgTurnaroundHours !== null ? `${data.kpi.avgTurnaroundHours} jam` : "—"
+                    data.kpi.avgTurnaroundHours !== null
+                      ? `${data.kpi.avgTurnaroundHours} jam`
+                      : "—"
                   }
                   hint="Rata-rata waktu penyelesaian 30 hari terakhir"
                 />
@@ -164,7 +186,10 @@ export function LetterWorkspace() {
                   disabled={isFetching}
                   aria-label="Muat ulang seluruh data pelayanan"
                 >
-                  <RefreshCw className={cn(isFetching && "animate-spin")} aria-hidden />
+                  <RefreshCw
+                    className={cn(isFetching && "animate-spin")}
+                    aria-hidden
+                  />
                   {isFetching ? "Menyegarkan…" : "Segarkan"}
                 </Button>
               </TooltipTrigger>
@@ -225,13 +250,15 @@ export function LetterWorkspace() {
       </div>
 
       <p className="px-1 text-[10px] leading-4 text-fg-subtle">
-        Pergeseran status surat, tanda tangan elektronik, dan pencetakan otomatis tercatat pada jejak
-        audit desa. Gunakan <Kbd>/</Kbd> untuk mencari warga lintas modul.
+        Pergeseran status surat, tanda tangan elektronik, dan pencetakan
+        otomatis tercatat pada jejak audit desa. Gunakan <Kbd>/</Kbd> untuk
+        mencari warga lintas modul.
       </p>
 
       <span className="sr-only">
-        Menampilkan {data?.queue.total ?? 0} pengajuan, halaman {data?.queue.page ?? 1} dari{" "}
-        {data?.queue.totalPages ?? 1}. Diperbarui pada{" "}
+        Menampilkan {data?.queue.total ?? 0} pengajuan, halaman{" "}
+        {data?.queue.page ?? 1} dari {data?.queue.totalPages ?? 1}. Diperbarui
+        pada{" "}
         {fulfilledTimeStamp ? new Date(fulfilledTimeStamp).toISOString() : ""}.
       </span>
     </>
@@ -261,7 +288,9 @@ function HeroStat({
           )}
           tabIndex={0}
         >
-          <p className="text-[10px] font-medium uppercase tracking-wide text-white/55">{label}</p>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-white/55">
+            {label}
+          </p>
           <p
             className={cn(
               "tnum mt-0.5 font-display text-sm font-bold leading-none",
