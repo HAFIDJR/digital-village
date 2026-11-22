@@ -109,7 +109,7 @@ export function QueueToolbar({
             aria-label="Saring antrean pengajuan"
             className="pl-8 pr-16"
           />
-          {queue.search ? (
+          {/* {queue.search ? (
             <button
               type="button"
               onClick={() => dispatch(queueActions.searchChanged(""))}
@@ -122,7 +122,7 @@ export function QueueToolbar({
             <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 md:flex">
               <Kbd>/</Kbd>
             </span>
-          )}
+          )} */}
         </div>
 
         {/* --- status ------------------------------------------------------- */}
